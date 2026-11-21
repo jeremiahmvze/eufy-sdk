@@ -72,6 +72,7 @@ export interface BundleFrame extends SessionFrame {
     tlv: string;
     cmdCode?: number;
     apiCommand?: number;
+    bleCommand?: number;
     subVersion?: number;
     functionType?: number;
     needEncrypt?: boolean;
@@ -442,6 +443,25 @@ function mqttJsonCommand(frame: BundleFrame): Command | undefined {
 }
 
 /**
+ * A v4 lock TLV as bytes: its hex with `{nowS:u32le}` the clock and `{param.<key>:<type>}` the written field, as the
+ * settings parser writes them; `undefined` for any other placeholder or a field that does not fit.
+ */
+function tlvHexOf(tlv: string, value: unknown): Buffer | undefined {
+  let ok = true;
+  const hex = tlv.replace(/\{([^}:]+):?([^}]*)\}/g, (_, name: string, type: string) => {
+    const bytes =
+      name === "nowS"
+        ? tlvBytes(type, Math.floor(Date.now() / 1000))
+        : name.startsWith("param.")
+          ? tlvBytes(type, (value as { param?: Record<string, unknown> } | undefined)?.param?.[name.slice(6)])
+          : undefined;
+    if (!bytes) ok = false;
+    return bytes?.toString("hex") ?? "";
+  });
+  return ok && /^([0-9a-fA-F]{2})*$/.test(hex) ? Buffer.from(hex, "hex") : undefined;
+}
+
+/**
  * The secure-MQTT write a `mqtt` frame of `type: "ble"` is: its `payload`, the TLV the bundle writes as hex
  * with placeholders (`A104{nowS:u32le}A228{userId}A301{value:u8}`), read into fields after `A1` (the time)
  * and `A2` (the user id), which the transport adds as it does for every frame; `{value:<type>}` is the
@@ -519,8 +539,11 @@ function sessionCommand(
   if (frame.body === "json1350" && (object || Array.isArray(filled))) {
     const command = setPayload(sub, (object ?? filled) as readonly unknown[], c, frame.mValue3, header);
     if (frame.lock) {
-      // v2 only: a v4 station-sealed body is built by no frame the data ships with a value of its own.
       const l = frame.lock;
+      if (l.version === 4) {
+        const payload = tlvHexOf(l.tlv, value);
+        return payload && ({ ...command, lock: { version: 4, bleCommand: l.bleCommand ?? 0, payload } } as Command);
+      }
       const fields = l.version === 2 ? tlvFields(l.tlv, value) : undefined;
       if (!fields) return undefined;
       return {

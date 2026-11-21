@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { P2PCommandRouter, type P2PRouterDeps } from "../command-router.js";
 import { decryptFf09Frame } from "../../ff09.js";
+import { createDecipheriv } from "node:crypto";
+import { lockKey } from "../doorlock-pass-through.js";
+import { serialIv } from "../keyed-payload.js";
 import { connectedSession, type FakeP2PSession } from "./session-fixtures.js";
 
 const LOCK_SN = "T8531P0000000000";
@@ -60,5 +63,52 @@ describe("a v2 lock setting over its station", () => {
       deviceSn: LOCK_SN,
     });
     expect(tlv.toString("hex")).toContain("a30107a40101");
+  });
+});
+
+/** `createPayloadForZhixingStationBle` (v4): `{payload}` = the station-sealed `{channel, lock_cmd, lock_payload, seq_num}`. */
+describe("a v4 lock setting over its station", () => {
+  it("sends {payload}, the TLV sealed under the station key with the lock's next seq_num", async () => {
+    const session = connectedSession(true) as FakeP2PSession & { sendSetPayload: ReturnType<typeof vi.fn> };
+    session.sendSetPayload = vi.fn(() => true);
+    const record = (sn: string, channel: number, parent?: string) => ({
+      sn,
+      stationSn: parent ?? sn,
+      channel,
+      p2pDid: "XXXXXXX-000000-XXXXX",
+      raw: { device_channel: channel, parent_sn: parent, member: { admin_user_id: ADMIN } },
+    });
+    const router = new P2PCommandRouter({
+      mega: {} as P2PRouterDeps["mega"],
+      listDevices: () => [record(STATION_SN, 0), record("T8500P0000000000", 3, STATION_SN)] as never,
+      ensureDevices: async () => {},
+      onConnect: () => {},
+      onClose: () => {},
+      onError: () => {},
+      onLevel2Ready: () => {},
+      onFrame: () => {},
+    });
+    (router as unknown as { manager: { register(sn: string, s: unknown): void } }).manager.register(
+      STATION_SN,
+      session,
+    );
+    const tlv = Buffer.from("a1021964a20101", "hex");
+    void router.dispatchCommand("T8500P0000000000", {
+      kind: "set-payload",
+      cmd: 1911,
+      payload: {},
+      channel: 3,
+      mValue3: 0,
+      lock: { version: 4, bleCommand: 0x22, payload: tlv },
+    });
+    await vi.waitFor(() => expect(session.sendSetPayload).toHaveBeenCalledTimes(1));
+
+    const [cmd, params] = session.sendSetPayload.mock.calls[0]!;
+    expect(cmd).toBe(1911);
+    const decipher = createDecipheriv("aes-128-cbc", lockKey(ADMIN, STATION_SN), serialIv(STATION_SN));
+    const plain = Buffer.concat([decipher.update(Buffer.from(params.payload, "base64")), decipher.final()]);
+    const inner = JSON.parse(plain.toString("utf-8").replace(/\0+$/, ""));
+    expect(inner).toMatchObject({ channel: 0, lock_cmd: 0x22, lock_payload: tlv.toString("base64") });
+    expect(typeof inner.seq_num).toBe("number");
   });
 });

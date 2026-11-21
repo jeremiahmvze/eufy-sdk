@@ -38,7 +38,7 @@ import { assertNever, isStationSerial } from "../../core/util.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { CONNECT_TIMEOUT_MS, P2PSession, STATION_CHANNEL, type P2PFrame } from "./p2p-session.js";
 import { buildDirectBinaryBody, buildStringBody } from "./write-commands.js";
-import { buildDoorlockPassThrough } from "./doorlock-pass-through.js";
+import { buildDoorlockPassThrough, sealStationPayload } from "./doorlock-pass-through.js";
 import { CommandType } from "./commands.js";
 import {
   buildFf09Frame,
@@ -1927,7 +1927,21 @@ export class P2PCommandRouter {
    * `seq_num`, the descriptor's `cmd` as `apiCommand`, and the frame's key time.
    */
   private async lockParams(sn: string, lock: NonNullable<Extract<Command, { kind: "set-payload" }>["lock"]>) {
-    const { accountId } = await this.resolveSession(sn);
+    const { accountId, parentSn } = await this.resolveSession(sn);
+    if (lock.version === 4) {
+      // `createPayloadForZhixingStationBle`: the lock's counter + 1, stored under the station (the lock's never moves).
+      const seqNum = (this.lockSeq.get(sn) ?? Math.trunc(Date.now() / 1000)) + 1;
+      this.lockSeq.set(parentSn, seqNum);
+      return {
+        payload: sealStationPayload({
+          adminUserId: accountId,
+          stationSn: parentSn,
+          lockCmd: lock.bleCommand,
+          lockPayload: lock.payload,
+          seqNum,
+        }),
+      };
+    }
     const frame = buildFf09TlvFrame({
       cmdCode: lock.cmdCode,
       fields: lock.fields,

@@ -275,3 +275,20 @@ describe("smart_lock_set_setting_params on a T8502 behind a HomeBase", () => {
     expect(thingWrite("smart_lock_set_setting_params", value, ctx)).toBeUndefined();
   });
 });
+
+/** The v4 settings parser (`setLockParamsBleV1PayloadData`, paramType 6500..): its TLV, sealed by the transport. */
+describe("smart_lock_set_setting_params on a T8500", () => {
+  it("writes paramType 6500 (auto-lock) as a v4 lock body under bleCommand 0x22", () => {
+    const ctx = contextOf({
+      identifier: "smart_lock_set_setting_params",
+      type: "text",
+      model: "T8500",
+      variant: "",
+      topology: "hb2",
+    });
+    const value = JSON.stringify({ paramType: 6500, param: { isAutoLock: 1, autoLockTime: 30 } });
+    const command = thingWrite("smart_lock_set_setting_params", value, ctx) as { lock?: any };
+    expect(command.lock).toMatchObject({ version: 4, bleCommand: 0x22 });
+    expect(command.lock.payload.toString("hex")).toBe("a1021964a20101a3021e00a404" + "00f15365");
+  });
+});
