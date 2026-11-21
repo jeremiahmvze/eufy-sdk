@@ -85,12 +85,16 @@ describe("secure-MQTT client id", () => {
     connect.mockReset().mockResolvedValue(undefined);
   });
 
-  it("identifies the client, not the certificate", async () => {
+  it("identifies the clean stack's client as MqttConnectionNew: its uuid then the endpoint without dashes", async () => {
     await bringUp(makeClient({ openudid: "a".repeat(16) }));
 
     expect(constructedWith).toHaveLength(1);
-    expect(clientIds()[0]).toMatch(new RegExp(`^android-eufy_mega-${UID}-[0-9a-f]{16}-\\d+$`));
+    const endpoint = CREDS.endpoint_addr.replace(/-/g, "");
+    expect(clientIds()[0]).toMatch(
+      new RegExp(`^android-eufy_mega-${UID}-[0-9a-f]{16}${endpoint.replace(/\./g, "\\.")}$`),
+    );
     expect(clientIds()[0]).not.toContain(CREDS.thing_name);
+    expect(constructedWith[0]).toMatchObject({ backoff: { attempts: 3 } });
   });
 
   it("takes the credential's own app name, and the scope's when it reports none", async () => {
