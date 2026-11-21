@@ -228,3 +228,50 @@ describe("smart_lock_rain_mode_switch on a T8531 behind a HomeBase", () => {
     ]);
   });
 });
+
+/** `smart_lock_set_setting_params` (`{paramType, param}`): the paramType's TLV, each field the parser writes in place. */
+describe("smart_lock_set_setting_params on a T8502 behind a HomeBase", () => {
+  it("writes paramType 0 (auto-lock and schedule) from the param fields", () => {
+    const ctx = contextOf({
+      identifier: "smart_lock_set_setting_params",
+      type: "text",
+      model: "T8502",
+      variant: "",
+      topology: "hb2",
+    });
+    const value = JSON.stringify({
+      paramType: 0,
+      param: {
+        isAutoLock: 1,
+        autoLockTime: 30,
+        isSchedule: 0,
+        scheduleStartTime: "22:00",
+        scheduleEndTime: "06:30",
+        lockLogic: 1,
+      },
+    });
+    const command = thingWrite("smart_lock_set_setting_params", value, ctx) as { cmd: number; lock?: any };
+    expect(command.cmd).toBe(1940);
+    expect(command.lock.fields.map((f: { tag: number; value: Buffer }) => [f.tag, f.value.toString("hex")])).toEqual([
+      [0xa3, "00"],
+      [0xa4, "01"],
+      [0xa5, "1e00"],
+      [0xa6, "00"],
+      [0xa7, "1600"],
+      [0xa8, "061e"],
+      [0xa9, "01"],
+    ]);
+  });
+
+  it("refuses a field it cannot encode rather than send a short frame", () => {
+    const ctx = contextOf({
+      identifier: "smart_lock_set_setting_params",
+      type: "text",
+      model: "T8502",
+      variant: "",
+      topology: "hb2",
+    });
+    const value = JSON.stringify({ paramType: 4, param: { lockVolume: 300 } });
+    expect(thingWrite("smart_lock_set_setting_params", value, ctx)).toBeUndefined();
+  });
+});

@@ -378,6 +378,8 @@ function tlvBytes(type: unknown, v: unknown): Buffer | undefined {
   if (type === "u8") return int(1);
   if (type === "u16le") return int(2);
   if (type === "u32le") return int(4);
+  // `HH:MM` as the two bytes [H, M] a lock schedule field takes.
+  if (type === "hm" && typeof v === "string" && /^\d{1,2}:\d{2}$/.test(v)) return Buffer.from(v.split(":").map(Number));
   if (type === "utf8" && v !== undefined && v !== null) return Buffer.from(String(v), "utf8");
   if (type === "hex" && typeof v === "string" && /^([0-9a-fA-F]{2})*$/.test(v)) return Buffer.from(v, "hex");
   return undefined;
@@ -400,7 +402,12 @@ function tlvFields(tlv: string, value: unknown): { tag: number; value: Buffer }[
       const [name, type] = tlv.slice(i + 1, end).split(":");
       i = end + 1;
       if ((tag === 0xa1 && name === "nowS") || (tag === 0xa2 && name === "userId")) continue;
-      bytes = name === "value" ? tlvBytes(type, value) : undefined;
+      bytes =
+        name === "value"
+          ? tlvBytes(type, value)
+          : name?.startsWith("param.")
+            ? tlvBytes(type, (value as { param?: Record<string, unknown> } | undefined)?.param?.[name.slice(6)])
+            : undefined;
     } else {
       bytes = Buffer.from(tlv.slice(i, i + len * 2), "hex");
       i += len * 2;
@@ -465,7 +472,12 @@ function nativeCommand(
  * the app does: a session other than the device's own (the default the client selects), a 1350 raw-params
  * frame (`params.cmd` 1003), or a 1700 live-start (`extValue` > 0).
  */
-function sessionCommand(frame: BundleFrame, fill: (x: unknown) => unknown, ctx: CommandContext): Command | undefined {
+function sessionCommand(
+  frame: BundleFrame,
+  fill: (x: unknown) => unknown,
+  ctx: CommandContext,
+  value?: unknown,
+): Command | undefined {
   const filled = fill(frame.payload);
   const object = objectOf(filled);
   const header = Number(fill(frame.channel));
@@ -485,7 +497,7 @@ function sessionCommand(frame: BundleFrame, fill: (x: unknown) => unknown, ctx: 
     if (frame.lock) {
       // v2 only: a v4 station-sealed body is built by no frame the data ships with a value of its own.
       const l = frame.lock;
-      const fields = l.version === 2 ? tlvFields(l.tlv, undefined) : undefined;
+      const fields = l.version === 2 ? tlvFields(l.tlv, value) : undefined;
       if (!fields) return undefined;
       return {
         ...command,
@@ -650,7 +662,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
   const transport = frame.transport ?? "p2p";
   const head =
     transport === "p2p"
-      ? sessionCommand(frame, fill, ctx)
+      ? sessionCommand(frame, fill, ctx, value)
       : transport === "dp"
         ? dpCommand(frame, fill)
         : transport === "http"
@@ -671,10 +683,30 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
  */
 export function thingWrite(identifier: string, value: string, ctx: CommandContext): Command | undefined {
   if (javaOverridden(identifier, ctx)) return undefined;
-  const frame = frameFor(bundleEntry(identifier, ctx)?.write, value);
+  // A `{paramType, param}` lock settings write (JSON): its frame is the paramType's, its marks the param's fields.
+  const struct = structOf(value);
+  const frame = frameFor(bundleEntry(identifier, ctx)?.write, struct ? String(struct.paramType) : value);
   const typed =
-    ctx.things?.properties[identifier]?.type === "bool" ? value === "1" : /^-?\d+$/.test(value) ? Number(value) : value;
+    struct ??
+    (ctx.things?.properties[identifier]?.type === "bool"
+      ? value === "1"
+      : /^-?\d+$/.test(value)
+        ? Number(value)
+        : value);
   return frame && frameCommand(frame, typed, ctx);
+}
+
+/** `value` as a `{paramType, param}` settings write, or undefined when it is not one. */
+function structOf(value: string): { paramType: number; param: Record<string, unknown> } | undefined {
+  if (!value.startsWith("{")) return undefined;
+  try {
+    const v = JSON.parse(value) as { paramType?: unknown; param?: unknown };
+    return Number.isInteger(v.paramType) && v.param && typeof v.param === "object"
+      ? { paramType: v.paramType as number, param: v.param as Record<string, unknown> }
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The raw value `param` (by default the first the bundle reads) holds for `identifier`'s `value`. */
