@@ -6,10 +6,11 @@
  * PM call of its own ({@link pmIce}, {@link RtcPmLiveStream}). Both seal under the station's one
  * {@link RtcCommandCounter}.
  *
- * Commands go as the app's RTC sender frames them ({@link RtcCommandRouter.dispatchCommand}). A command waits for the data channel in 20 ms steps, as the app's
- * `getRtcFileChannelConnectedStatus` wait does, and settles on its reply, which is not an observation of the
- * resulting state. A wait that runs out drops the data channel (or, before login, the station), so the next command
- * starts over.
+ * Commands go as the app's RTC sender frames them ({@link RtcCommandRouter.dispatchCommand}). A command waits for the
+ * data channel in 20 ms steps, as the app's `getRtcFileChannelConnectedStatus` wait does, and settles on its reply,
+ * which is not an observation of the resulting state. A wait that runs out drops the data channel (or, before login,
+ * the station); a data channel that closes (its KCP detect failing, {@link RtcDataChannel.detect}) is dropped too,
+ * and the next command places a fresh PRIV1 call, as the app's request wait re-calls a disconnected file channel.
  *
  * The station's database: a `1350` with inner `1306` (CMD_DATABASE) answers a table and inner `1308`
  * (CMD_DATABASE_IMAGE) a stored image, each as the station's notify under that command id, matched by its content
@@ -315,12 +316,14 @@ export class RtcCommandRouter {
     try {
       await abortable(st.ready, deadline);
       const flag = kcpMulti(sn, route.sdkVersion) ? 3 : 0;
-      const data = (st.data ??= (this.deps.layers?.priv1 ?? priv1)(st.signal, {
-        sn,
-        version: route.version,
-        flag,
-        counter: st.counter,
-      }));
+      let data = st.data;
+      if (!data) {
+        const placed =
+          (data =
+          st.data =
+            (this.deps.layers?.priv1 ?? priv1)(st.signal, { sn, version: route.version, flag, counter: st.counter }));
+        placed.once("close", () => void (st.data === placed && (st.data = undefined)));
+      }
       while (!data.connected) await sleep(20, undefined, { signal: deadline });
       return data;
     } catch (e) {

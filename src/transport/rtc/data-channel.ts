@@ -31,6 +31,8 @@ const CMD = 1;
 const NOTIFY = 3;
 const GCM_VERSION = 0x0a;
 const PROBE = Buffer.from([0xef, 0xbe, 0, 0]);
+/** The KCP detect heartbeat: an `XZYH` header of id 1139, every other byte 0, no body. */
+const HEARTBEAT = Buffer.from("XZYH\x73\x04" + "\0".repeat(10), "latin1");
 /** The app's per-model firmware gate for the command AES-GCM; any other model always encrypts. */
 const CMD_GCM: Record<string, (v: number) => boolean> = {
   T9000: (v) => v > 4099,
@@ -177,6 +179,7 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
   private readonly key: Buffer;
   private readonly seal?: { key: Buffer; counter: RtcCommandCounter };
   private readonly timer: NodeJS.Timeout;
+  private detecting?: NodeJS.Timeout;
 
   /**
    * `out` sends one datagram on the ICE pair. `key` is the PRIV1 call's `sdp_info` key, whose first 16 bytes key the
@@ -229,8 +232,25 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
     });
   }
 
+  /**
+   * The app's KCP detect (`detect_send_kcpdata`), run from ICE connected: the {@link HEARTBEAT} as a command element
+   * every second, at most 8 times, until the station's first message; none by the eighth second closes the channel,
+   * as `file_agent_disconnected` uninitialises the app's file agent.
+   */
+  detect(): void {
+    let sent = 0;
+    const beat = () => {
+      if (sent === 8) return this.close();
+      this.kcps[0]!.send(wrtcLink(CMD, HEARTBEAT, this.opts.multi));
+      sent++;
+      this.detecting = setTimeout(beat, 1000);
+    };
+    beat();
+  }
+
   close(): void {
     clearInterval(this.timer);
+    clearTimeout(this.detecting);
     for (const p of [...this.pending]) this.settle(p, new Error("rtc data channel closed"));
     this.emit("close");
   }
@@ -246,6 +266,7 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
     const msg = readLinkMessage(m, this.opts.multi);
     if (!msg) return;
     this.connected = true;
+    clearTimeout(this.detecting);
     const stream = this.streams.get(msg.type);
     if (!stream) return void this.emit("link", msg.type, msg.data);
     let buf = Buffer.concat([stream, msg.data]);
@@ -302,7 +323,8 @@ const RESEND: [type: string, ms: number, below: number, after: number][] = [
  * `{"file_candidate", "file_candidate_num"}` and again until the station acks it, every 300 ms (host, 1000 ms after 8
  * sends), 500 ms (srflx, 1500 ms after 6) or 800 ms (relay, 2000 ms after 4), doubled from the fifth resend; once
  * gathering is done the local description goes out once as INFO `{"sdp"}`. A station candidate is added once per slot
- * number. ICE connected opens the channel and sends the KCP transport probe `EF BE 00 00` five times 1 ms apart.
+ * number. ICE connected opens the channel, sends the KCP transport probe `EF BE 00 00` five times 1 ms apart and runs
+ * {@link RtcDataChannel.detect}.
  */
 export function priv1(
   signal: RtcSignalClient,
@@ -355,6 +377,7 @@ export function priv1(
   agent.on("data", (d) => channel.input(d));
   agent.once("connected", () => {
     channel.connected = true;
+    channel.detect();
     for (let i = 0; i < 5; i++)
       timers.set(
         `probe${i}`,

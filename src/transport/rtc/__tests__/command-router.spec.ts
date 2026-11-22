@@ -117,6 +117,16 @@ describe("RtcCommandRouter on the native layers", () => {
     router.close();
   });
 
+  it("places a fresh PRIV1 call once the data channel closes", async () => {
+    const { router, data, priv1 } = layers();
+    const cmd = { kind: "set-json", param: 1400, data: {}, channel: 3 } as const;
+    await router.dispatchCommand(ROUTE, cmd);
+    data.emit("close");
+    await router.dispatchCommand(ROUTE, cmd);
+    expect(priv1).toHaveBeenCalledTimes(2);
+    router.close();
+  });
+
   it("starts a live view on a PM call with the start JSON over ANKE, under the data channel's counter", async () => {
     const { router, signal, agent, priv1, pmIce } = layers();
     await router.dispatchCommand(
