@@ -58,11 +58,15 @@ describe("deriveLevel2KeyFromRsaGatewayInfo", () => {
     expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped(), PKCS8_B64)).toEqual(SESSION_KEY);
   });
 
-  test("recovers the 16-byte key with a PEM private key, PKCS#8 or PKCS#1", () => {
-    for (const type of ["pkcs8", "pkcs1"] as const) {
-      const pem = privateKey.export({ type, format: "pem" }).toString();
-      expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped(), pem)).toEqual(SESSION_KEY);
-    }
+  /** `ConnectKeyFactory$RSA`: newlines and the RSA armor dropped, the rest base64 as PKCS#8 whatever the armor says. */
+  test("reads the key as the app does: PKCS#8 under any armor it drops, nothing else", () => {
+    const armored = (label: string, der: Buffer) =>
+      `-----BEGIN ${label}-----\r\n${der.toString("base64").replace(/.{64}/g, "$&\r\n")}\r\n-----END ${label}-----\n`;
+    const pkcs8 = privateKey.export({ type: "pkcs8", format: "der" });
+    const pkcs1 = privateKey.export({ type: "pkcs1", format: "der" });
+    expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped(), armored("RSA PRIVATE KEY", pkcs8))).toEqual(SESSION_KEY);
+    expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped(), armored("RSA PRIVATE KEY", pkcs1)), "PKCS#1").toBeUndefined();
+    expect(deriveLevel2KeyFromRsaGatewayInfo(wrapped(), armored("PRIVATE KEY", pkcs8)), "PKCS#8 armor").toBeUndefined();
   });
 
   test("answers undefined for a payload shorter than the modulus", () => {

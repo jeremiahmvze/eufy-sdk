@@ -312,8 +312,9 @@ export function deriveLevel2KeyFromGatewayInfo(body: Buffer, eccPrivateKeyHex: s
 
 /**
  * The AES-128-ECB key any other `CMD_GATEWAYINFO` (1100) gives, as the app reads the body after `cipher_id`: the
- * whole body decrypted `RSA/ECB/PKCS1Padding` under the cipher's `private_key` (PEM or base64 PKCS#8 DER, read as
- * PKCS#8), the plaintext made a Java `String` (UTF-8), and the first 16 bytes of that string in JNI's modified UTF-8
+ * whole body decrypted `RSA/ECB/PKCS1Padding` under the cipher's `private_key` (newlines and the `RSA PRIVATE KEY`
+ * armor lines dropped, the rest base64 read as PKCS#8 DER whatever the armor says), the plaintext made a Java `String`
+ * (UTF-8), and the first 16 bytes of that string in JNI's modified UTF-8
  * as the native setter copies them, zero beyond its end. The padding is checked here over the raw RSA result so a wrong key fails closed:
  * under OpenSSL's implicit rejection, `RSA_PKCS1_PADDING` answers random bytes for it instead of throwing.
  *
@@ -321,9 +322,8 @@ export function deriveLevel2KeyFromGatewayInfo(body: Buffer, eccPrivateKeyHex: s
  */
 export function deriveLevel2KeyFromRsaGatewayInfo(body: Buffer, rsaPrivateKey: string): Buffer | undefined {
   try {
-    const key = rsaPrivateKey.includes("-----BEGIN")
-      ? createPrivateKey(rsaPrivateKey)
-      : createPrivateKey({ key: Buffer.from(rsaPrivateKey, "base64"), format: "der", type: "pkcs8" });
+    const b64 = rsaPrivateKey.replace(/-----(BEGIN|END) RSA PRIVATE KEY-----/g, "").replace(/[^A-Za-z0-9+/=]/g, "");
+    const key = createPrivateKey({ key: Buffer.from(b64, "base64"), format: "der", type: "pkcs8" });
     const modulusBits = key.asymmetricKeyDetails?.modulusLength;
     if (!modulusBits || body.length !== Math.ceil(modulusBits / 8)) return undefined;
     const block = privateDecrypt({ key, padding: constants.RSA_NO_PADDING }, body);
