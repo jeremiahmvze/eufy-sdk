@@ -725,6 +725,16 @@ describe("the regenerated data's forms", () => {
     expect(read({ count: 1, schedules: { loop: 0 } })).toBe('{"count":1,"schedules":{"loop":0}}');
   });
 
+  it("reads a mower's Home Assistant password at its protobuf path, an empty one as the bundle's default", () => {
+    const read = (hex: string) =>
+      thingRead("ecl_mow_get_home_assistant_config_passwd", ctx("T2880"), (p) =>
+        p === 160 ? Buffer.from(hex, "hex").toString("base64") : undefined,
+      );
+    expect(read("0a020801" + "1204" + "0a02" + Buffer.from("pw").toString("hex"))).toBe("pw");
+    expect(read("1200"), "set, empty").toBe("");
+    expect(read("0a020801"), "no passwd").toBeUndefined();
+  });
+
   it("leaves a $userId key to the transport", () => {
     const frame: BundleFrame = {
       cmd: 1271,
