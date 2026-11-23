@@ -282,6 +282,25 @@ describe("DeviceRegistry", () => {
       expect(paths.some((p) => p.includes("get_device_param_list"))).toBe(false);
     });
 
+    it("reads the cached list, as the app does: only a cold cache fetches it", async () => {
+      vi.useFakeTimers();
+      const paths: string[] = [];
+      const reg = new DeviceRegistry({
+        mega: fakeMega({
+          post: async (_s, path) => {
+            paths.push(path);
+            return path.endsWith("get_house_list") ? { house_infos: [] } : { devices: [rawDevice("A")] };
+          },
+        }),
+        onError: () => {},
+      });
+      await reg.record("A");
+      vi.advanceTimersByTime(60_000);
+      await reg.record("A");
+      vi.useRealTimers();
+      expect(paths.filter((p) => p.endsWith("get_devs_list"))).toHaveLength(1);
+    });
+
     it("throws a helpful error for an unknown serial", async () => {
       const mega = fakeMega({
         post: async (_s, path) =>

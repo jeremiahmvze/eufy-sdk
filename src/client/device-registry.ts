@@ -205,11 +205,10 @@ export interface DeviceRegistryDeps {
 }
 
 /**
- * How long a fetched device list is reused for a per-device read that needs a fresher one.
+ * How long a fetched device list is reused by {@link DeviceRegistry.refreshedList}.
  *
- * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so a caller resolving a
- * fleet must not trigger one fetch per device. Short enough that a read-through refresh still observes a change
- * (the default staleness window is longer than this), long enough that resolving a whole fleet costs one list.
+ * The list is account-wide (`get_house_list` plus one `get_devs_list` per house), so a convergence wait polling
+ * it, or a fleet resolved on a cold cache, must not trigger one fetch per iteration or per device.
  */
 const LIST_REUSE_MS = 5_000;
 
@@ -232,7 +231,7 @@ export class DeviceRegistry {
   private channelMapFor?: EufyDevice[];
   /** One in-flight device-list fetch shared by every caller that wants a fresher list. See {@link refreshedList}. */
   private listInFlight?: Promise<EufyDevice[]>;
-  /** When the device list was last fetched, so a burst of per-device reads shares one. See {@link refreshedList}. */
+  /** When {@link getDevices} last resolved, so a burst of {@link refreshedList} callers shares one list. */
   private listFetchedAtMs = 0;
   /** Per-serial capability cache for {@link capabilitiesForDevice}; `null` = negative hit. */
   private readonly deviceCapsCache = new Map<string, ReadonlySet<Capability> | null>();
@@ -363,6 +362,7 @@ export class DeviceRegistry {
     await this.loadCloudDps(seen);
     await this.loadThings(seen);
     this.lastRefreshPartial = partial;
+    this.listFetchedAtMs = Date.now();
     this.onListFetched?.([...seen.values()]);
     if (partial) for (const prev of this.devices) if (!seen.has(prev.sn)) seen.set(prev.sn, prev);
     this.devices = [...seen.values()];
@@ -544,18 +544,15 @@ export class DeviceRegistry {
    * Resolve a serial to a {@link DeviceRecord} with current params: the device-list params, with an AIoT
    * robot's cloud data points ({@link loadCloudDps}) beneath them, filling only ids the list does not carry.
    *
-   * The list is the only cloud source of a device's params; realtime state (push, P2P, MQTT) lands on the
-   * `Device`, not here.
-   *
-   * The list is account-wide, so a re-fetch is NOT per device: resolving a fleet calls this once per device,
-   * and each one re-fetching would multiply one burst into N. {@link refreshedList} reuses a list younger
-   * than {@link LIST_REUSE_MS} and coalesces concurrent fetches. A fetch that fails falls back to the cached
-   * list; a dead session propagates.
+   * Reads the cached list, as the app does: it re-fetches the list on home resume, cold start and after its
+   * own account changes, never on a device read. Only a serial the cache doesn't hold (a cold start) fetches,
+   * through {@link refreshedList}; a dead session propagates. The host's {@link getDevices}, the poll and the
+   * realtime paths are what move the params after that.
    *
    * Shared by {@link EufyMega.getDevice} / {@link EufyMega.inspectDevice} / `commandContext`.
    */
   async record(sn: string): Promise<DeviceRecord> {
-    const dev = (await this.refreshedList(sn)) ?? this.devices.find((d) => d.sn === sn);
+    const dev = this.devices.find((d) => d.sn === sn) ?? (await this.refreshedList(sn));
     if (!dev) throw new Error(`device ${sn} not found (have: ${this.devices.map((d) => d.sn).join(", ")})`);
 
     const params: Record<number, string> = { ...this.cloudDps.get(sn), ...(dev.params ?? {}) };
@@ -597,14 +594,9 @@ export class DeviceRegistry {
    */
   async refreshedList(sn: string): Promise<EufyDevice | undefined> {
     if (Date.now() - this.listFetchedAtMs < LIST_REUSE_MS) return this.devices.find((d) => d.sn === sn);
-    this.listInFlight ??= this.getDevices()
-      .then((devices) => {
-        this.listFetchedAtMs = Date.now();
-        return devices;
-      })
-      .finally(() => {
-        this.listInFlight = undefined;
-      });
+    this.listInFlight ??= this.getDevices().finally(() => {
+      this.listInFlight = undefined;
+    });
     try {
       return (await this.listInFlight).find((d) => d.sn === sn);
     } catch (e) {
