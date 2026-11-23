@@ -977,6 +977,56 @@ describe("the regenerated data's forms", () => {
     });
   });
 
+  it("writes a dual-lens zone on the command its sensor_id picks (6476 / 6487)", () => {
+    const pots = [
+      {
+        points: [
+          { x: 0.1, y: 0.2 },
+          { x: 0.6, y: 0.15 },
+          { x: 0.7, y: 0.8 },
+          { x: 0.05, y: 0.75 },
+        ],
+      },
+    ];
+    const activezone = {
+      polygens: [
+        {
+          points: [
+            { x: 101, y: 201 },
+            { x: 601, y: 151 },
+            { x: 701, y: 801 },
+            { x: 51, y: 751 },
+          ],
+        },
+      ],
+    };
+    const sent = (identifier: string, sensor_id: number) =>
+      thingWrite(identifier, JSON.stringify({ index: 2, sensor_id, pots }), ctx("T8172"));
+    expect(sent("activityzone_config", 0)).toMatchObject({
+      cmd: 6476,
+      payload: { list: [{ sensor_id: 0, activezone }] },
+    });
+    expect(sent("activityzone_config", 1)).toMatchObject({
+      cmd: 6487,
+      payload: { list: [{ sensor_id: 1, posZoneList: [{ index: 2, activezone }] }] },
+    });
+    expect(sent("aic_activityzone_config", 0)).toMatchObject({
+      cmd: 6497,
+      payload: {
+        originSubCmd: 6476,
+        is_preset_position: 0,
+        list: [{ sensor_id: 0, posZoneList: [{ index: 2, activezone }] }],
+      },
+    });
+    expect(sent("aic_activityzone_config", 1)).toMatchObject({
+      payload: {
+        originSubCmd: 6487,
+        is_preset_position: 1,
+        list: [{ sensor_id: 1, posZoneList: [{ index: 2, activezone }] }],
+      },
+    });
+  });
+
   it("reads the response-timeout schedule as the bundle re-stringifies it, a looping one unwrapped", () => {
     const read = (o: unknown) =>
       thingRead("device_response_timeout_schedule", ctx("T8214"), (p) =>
