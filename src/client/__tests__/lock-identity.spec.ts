@@ -57,4 +57,8 @@ describe("a lock command's member id", () => {
       payload: { userId: OWNER },
     });
   });
+
+  it("keys an ff09 frame with it, as the bundle's user_id and esiotkit's getAesKey read it", async () => {
+    expect(await sent("T8520P0000000000", "T8520", 51)).toMatchObject({ kind: "ff09-actuate", adminUserId: OWNER });
+  });
 });
