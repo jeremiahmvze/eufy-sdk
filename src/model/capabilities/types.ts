@@ -335,6 +335,8 @@ export interface CommandContext extends AvailabilityContext {
    * none) unless the client pins a different label for it.
    */
   accountName?: string;
+  /** The login reply's raw `nick_name`, `''` kept, no fallback: the name the HomeBase siren preview carries. */
+  nickName?: string;
   /**
    * Whether the device has a usable P2P endpoint (a non-empty `p2p_did`). A HomeBase-attached lock
    * (T8531) is P2P-reachable; a standalone garage/lock (T85D0, `p2p_did:""`) is MQTT-only. The lock

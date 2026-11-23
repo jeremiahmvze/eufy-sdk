@@ -485,6 +485,11 @@ export class MegaHttpClient {
    * pins one, otherwise the app's own: the login reply's `nick_name`, else the login email's local-part
    * (the whole email when it has no `@`).
    */
+  /** The login reply's raw `nick_name` (`''` kept), `undefined` when the reply had none. */
+  get nickName(): string | undefined {
+    return this.auth_?.nickName;
+  }
+
   get accountName(): string {
     const pinned = this.cfg.accountName?.trim() || this.auth_?.nickName;
     if (pinned) return pinned;

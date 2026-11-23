@@ -24,7 +24,7 @@ export function readLoginReply(data: Record<string, unknown>) {
     authToken,
     geoKey: data.geo_key as string | undefined,
     /** The account's `nick_name`, the name the app writes into the commands it attributes to the user. */
-    nickName: data.nick_name as string | undefined,
+    nickName: typeof data.nick_name === "string" ? data.nick_name : undefined,
     tokenExpiresAt: Number(data.token_expires_at ?? 0) || 0,
     twoFactorPending: !!((data.fa_info ?? {}) as { info?: string }).info,
   };
