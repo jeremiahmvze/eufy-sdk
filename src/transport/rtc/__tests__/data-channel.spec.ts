@@ -160,6 +160,38 @@ describe("RtcDataChannel commands", () => {
     }
   });
 
+  it("hangs a heard channel up when neither KCP input nor ack progress came for 10 s, as the app's manager does", async () => {
+    vi.useFakeTimers();
+    try {
+      const peer = new Kcp(1, (d) => dead.input(d));
+      peer.nodelay(1, 2, 2, 1);
+      const sent: Buffer[] = [];
+      const dead = new RtcDataChannel((d) => sent.push(d), { multi: false, key: KEY, gcm: false });
+      open.push(dead);
+      const closed = vi.fn();
+      dead.on("close", closed);
+      peer.send(stationMessage(1, frame(1139, Buffer.alloc(0)), false));
+      peer.update(Date.now());
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect([closed.mock.calls.length, sent.length > 0]).toEqual([0, true]);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(closed).toHaveBeenCalledOnce();
+
+      const beats: Buffer[] = [];
+      const alive = station(false, false, (d) =>
+        beats.push(d) === 1 ? [stationMessage(1, frame(1103, Buffer.alloc(0)), false)] : [],
+      );
+      const kept = vi.fn();
+      alive.channel.on("close", kept);
+      void alive.channel.command(1103, "{}");
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(kept).not.toHaveBeenCalled();
+      expect(beats.length).toBeGreaterThan(40);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("gates the command GCM by model and firmware as the app does", () => {
     expect([cmdGcm("T9000P0000000000", 4099), cmdGcm("T9000P0000000000", 4100)]).toEqual([false, true]);
     expect([cmdGcm("T8N00P0000000000", 1150), cmdGcm("T8N00P0000000000", 1205)]).toEqual([true, false]);
