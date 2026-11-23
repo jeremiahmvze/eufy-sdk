@@ -151,6 +151,16 @@ describe("recording download through the router", () => {
     expect(getCiphers).toHaveBeenCalledWith([CIPHER_ID], cameraAdmin, STATION_SN, "station_sn");
   });
 
+  it("looks the cipher up under the recording's stated cipher user, the request still the station's", async () => {
+    const cipherUser = "3".repeat(40);
+    const { media, sent, getCiphers } = homeBase2();
+
+    await media.downloadRecording!({ recording: RECORDING, cipherId: CIPHER_ID, cipherUserId: cipherUser });
+
+    expect(sent[0]![2]).toBe(ACCOUNT_ID);
+    expect(getCiphers).toHaveBeenCalledWith([CIPHER_ID], cipherUser, STATION_SN, "station_sn");
+  });
+
   it("runs one download at a time per station", async () => {
     const { media, sent, transfers } = homeBase2();
 

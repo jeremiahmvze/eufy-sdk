@@ -961,9 +961,9 @@ export class P2PCommandRouter {
     });
     const path = station.path(channel, opts.recording);
     if (!path) throw new RecordingDownloadError("invalid-recording", `no recording named ${opts.recording}`);
-    // The cipher's user is `DefaultDownloadStrategy.getAdminUserId`: the record's `cipherUserId`, which a
-    // station-named recording does not carry, else `AccountDelegate.b(camera)`, the camera's member rule.
-    const cipherUser = memberAccountId(this.recordFor(sn)?.raw, this.deps.mega.auth?.userId);
+    // The cipher's user is `DefaultDownloadStrategy.getAdminUserId`: the record's `cipherUserId` unless empty,
+    // else `AccountDelegate.b(camera)`, the camera's member rule.
+    const cipherUser = opts.cipherUserId || memberAccountId(this.recordFor(sn)?.raw, this.deps.mega.auth?.userId);
     const eccKey = station.sealed ? await this.cipherKeyFor(opts.cipherId, cipherUser, parentSn, 8) : undefined;
     if (station.sealed && !eccKey) {
       throw new RecordingDownloadError("key-unavailable", `cipher ${opts.cipherId} could not be obtained`);
