@@ -158,7 +158,7 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
       "trigger",
       "stop",
     ]);
-    expect(homeBase.actions.find((action) => action.name === "trigger")?.args).toEqual([]);
+    expect(homeBase.actions.find((action) => action.name === "trigger")?.args).toBeUndefined();
     expect(camera.reads).toEqual([]);
     expect(camera.actions.map((action) => action.name)).toEqual(["trigger", "stop"]);
     expect(standalone.reads.map((read) => read.accessor)).toEqual(["active", "volume"]);

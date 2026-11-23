@@ -299,8 +299,8 @@ describe("siren capability module", () => {
         paramIds: new Set(),
         things: alarmThings(model, ["0", "3"]),
       });
-      await acts.trigger!();
-      await acts.stop!();
+      await acts.trigger!([3]);
+      await acts.stop!([3]);
       expect(sent).toEqual(
         [on, off].map((payload) => ({
           kind: "set-payload",
@@ -332,8 +332,8 @@ describe("siren capability module", () => {
       ["T8134", true, 1202],
     ])("sends a %s (attached %s) the bundle's 30 s sound-only alarm, then its stop", async (model, attached, cmd) => {
       const { acts, sent } = sirenOf(camera(model, attached));
-      await acts.trigger!();
-      await acts.stop!();
+      await acts.trigger!([0]);
+      await acts.stop!([0]);
       expect(sent).toEqual(
         [30, 0].map((time_out) => ({
           kind: "set-payload",
@@ -347,8 +347,8 @@ describe("siren capability module", () => {
 
     it("sends a standalone T8410 the bundle's level-1 1201 on the station channel", async () => {
       const { acts, sent } = sirenOf(camera("T8410", false));
-      await acts.trigger!();
-      await acts.stop!();
+      await acts.trigger!([0]);
+      await acts.stop!([0]);
       expect(sent).toEqual(
         [30, 0].map((value) => ({
           kind: "p2p-int-string",
@@ -363,11 +363,52 @@ describe("siren capability module", () => {
 
     it("sends a T8114 behind a HomeBase the bundle's 1202 pair", async () => {
       const { acts, sent } = sirenOf(camera("T8114", true, 3));
-      await acts.trigger!();
-      await acts.stop!();
+      await acts.trigger!([0]);
+      await acts.stop!([0]);
       expect(sent).toEqual(
         [30, 0].map((value) => ({ kind: "set-param", param: 1202, value, channel: 3, form: "int-pair" })),
       );
+    });
+
+    it("sends sound with light as one 2 and the HomeBase sound on the camera, refused while the speaker is off", async () => {
+      const td = parseThingsList({
+        things_list: [
+          {
+            profile: { product_code: "T8170" },
+            properties: [
+              {
+                identifier: "set_alarm_type__v1",
+                access_mode: "RW",
+                data_type: {
+                  type: "ienum",
+                  specs: { eunmList: ["0", "1", "2", "3"].map((value) => ({ value, desc: "" })) },
+                },
+              },
+              { identifier: "speaker_on_off", access_mode: "RW", data_type: { type: "bool" } },
+            ],
+          },
+        ],
+      }).T8170!;
+      const { set_alarm_type__v1, speaker_on_off } = td.properties;
+      const things = { ...td, properties: { set_alarm_type: set_alarm_type__v1!, speaker_on_off: speaker_on_off! } };
+      const speaker = { value: "1" };
+      const paramValue = (p: number) => (p === 1241 ? speaker.value : undefined);
+      const { acts, sent } = sirenOf({ ...camera("T8170", true), things, paramValue });
+      await acts.trigger!([0, 1, 3]);
+      await acts.stop!([0, 1, 3]);
+      // Type 2 rides 1202 as 23; the HomeBase sound 3 is routed by the camera's own bundle to 1201 as 0.
+      expect(sent.map((c) => [(c as { cmd: number }).cmd, (c as { payload: object }).payload])).toEqual(
+        [30, 0].flatMap((time_out) =>
+          [
+            [1202, 23],
+            [1201, 0],
+          ].map(([cmd, type]) => [cmd, { channel: 2, type, time_out, user_name: "", transaction: expect.any(String) }]),
+        ),
+      );
+      speaker.value = "0";
+      await expect(acts.trigger!([0])).rejects.toThrow(/speaker is off/);
+      await expect(acts.trigger!([4])).rejects.toThrow(/must be some of 0\/1\/2\/3/);
+      expect(sent).toHaveLength(4);
     });
 
     it("installs no alarm action where the description lists no set_alarm_type", () => {
@@ -457,8 +498,8 @@ describe("siren capability module", () => {
       read: () => undefined,
     }).siren as SirenActions;
 
-    await expect(actions.trigger!()).rejects.toThrow(/transport failed/);
-    await expect(actions.stop!()).rejects.toThrow(/transport failed/);
+    await expect(actions.trigger!(context.codec === "station" ? [3] : [0])).rejects.toThrow(/transport failed/);
+    await expect(actions.stop!(context.codec === "station" ? [3] : [0])).rejects.toThrow(/transport failed/);
     expect(attempted).toHaveLength(2);
     expect(actions.active).toBeUndefined();
   });
@@ -541,9 +582,9 @@ const _setVolumeOptional: Exact<undefined extends typeof sn.setVolume ? true : f
 const _testOptional: Exact<undefined extends typeof sn.test ? true : false, true> = true;
 const _testArgs: Exact<Parameters<NonNullable<typeof sn.test>>, []> = true;
 const _triggerOptional: Exact<undefined extends typeof sn.trigger ? true : false, true> = true;
-const _triggerArgs: Exact<Parameters<NonNullable<typeof sn.trigger>>, []> = true;
+const _triggerArgs: Exact<Parameters<NonNullable<typeof sn.trigger>>, [types: readonly number[]]> = true;
 const _stopOptional: Exact<undefined extends typeof sn.stop ? true : false, true> = true;
-const _stopArgs: Exact<Parameters<NonNullable<typeof sn.stop>>, []> = true;
+const _stopArgs: Exact<Parameters<NonNullable<typeof sn.stop>>, [types?: readonly number[]]> = true;
 
 /** Read-only members expose no setter for sounding state or do-not-disturb. */
 const _noSetActive: Exact<"setActive" extends keyof SirenActions ? true : false, false> = true;
