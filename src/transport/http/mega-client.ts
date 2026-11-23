@@ -995,11 +995,12 @@ export class MegaHttpClient {
     return this.postSigned<SecureMqttCredentials>(basic, path, {}, true, {}, { "app-tab": scope });
   }
 
+  /** The app's `PushManager.uploadToken` body: the push token, also as `voip_token`. */
   async registerPushToken(token: string): Promise<void> {
     await this.post("push", "/app/push/register_push_token", {
-      is_notification_enable: true,
       token,
-      voip_token: "",
+      is_notification_enable: true,
+      voip_token: token,
     });
   }
 

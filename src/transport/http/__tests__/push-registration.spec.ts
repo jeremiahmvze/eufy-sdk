@@ -28,7 +28,7 @@ describe("MegaHttpClient push registration", () => {
     expect(post).toHaveBeenCalledWith("push", "/app/push/register_push_token", {
       is_notification_enable: true,
       token: "synthetic-fcm-token",
-      voip_token: "",
+      voip_token: "synthetic-fcm-token",
     });
     expect(securityAppPost).not.toHaveBeenCalled();
   });
