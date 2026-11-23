@@ -1144,7 +1144,8 @@ test("names a shared frame by its index, and reads a quality config through its 
   vi.doUnmock("../bundle-wires.generated.json");
 });
 
-test("timezone_set: written, read and reflected as the app's own code does, nothing on a redirect product", async () => {
+test("timezone_set: written, read and reflected as the app's own code does, redirected over MQTT on T8028", async () => {
+  vi.resetModules();
   const index = await import("../index.js");
   const { commandReflection } = await import("../../../core/contracts.js");
   const td = things({ timezone_set: ["0"] });
@@ -1161,7 +1162,19 @@ test("timezone_set: written, read and reflected as the app's own code does, noth
   });
   expect(index.buildCommand("timezone_set", "Mars/Olympus", standalone)).toMatchObject({ value: "" });
   const redirect = ctx("T8028", { things: things({ timezone_set: ["0"], timezone_set_redirect: ["0"] }) });
-  expect(index.buildCommand("timezone_set", "Europe/Berlin", redirect)).toBeUndefined();
+  const sent = (zone: string) => {
+    const { payload, ...rest } = index.buildCommand("timezone_set", zone, redirect) as any;
+    return { ...rest, inner: JSON.parse(Buffer.from(payload.data, "base64").toString()) };
+  };
+  expect(sent("Europe/Berlin")).toEqual({
+    kind: "mqtt-json",
+    mqttCmdCode: 9,
+    cmd: 1215,
+    needAck: false,
+    timeoutS: 15,
+    inner: { cmd: 1215, payload: { timezone: berlin } },
+  });
+  expect(sent("Mars/Olympus").inner).toEqual({ cmd: 1215, payload: { timezone: "" } });
   const read = (raw?: string) => index.thingValue("timezone_set", standalone, (p) => (p === 1215 ? raw : undefined));
   expect(read(berlin)).toBe("Europe/Berlin");
   expect(read("PST8PDT,M3.2.0,M11.1.0|1.1361|US/Pacific"), "first sn wins").toBe("Canada/Pacific");
