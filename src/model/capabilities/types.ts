@@ -331,8 +331,8 @@ export interface CommandContext extends AvailabilityContext {
   shortUserId?: string;
   /**
    * The acting name a command attributes itself to — the lock cmd acting-username `A4` field, and the
-   * `user_name` of the guard-mode write. The logged-in account's display name
-   * (email local-part) unless the client pins a different label for it.
+   * `user_name` of the guard-mode write. The account's `nick_name` (email local-part when it has
+   * none) unless the client pins a different label for it.
    */
   accountName?: string;
   /**
