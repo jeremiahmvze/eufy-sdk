@@ -43,10 +43,18 @@ async function sent(sn: string, model: string, deviceType: number): Promise<Comm
 }
 
 describe("a lock command's member id", () => {
-  it.each([["the classic Wi-Fi lock's keyed payload", "T8520P2000000000", "T8520", 51, "keyed-payload-actuate"]])(
-    "quotes the record's admin_user_id in %s",
-    async (_name, sn, model, deviceType, kind) => {
-      expect(await sent(sn, model, deviceType)).toMatchObject({ kind, adminUserId: OWNER });
-    },
-  );
+  it("quotes the record's admin_user_id in the classic Wi-Fi lock's keyed payload", async () => {
+    expect(await sent("T8520P2000000000", "T8520", 51)).toMatchObject({
+      kind: "keyed-payload-actuate",
+      adminUserId: OWNER,
+    });
+  });
+
+  it("quotes it as the video lock's userId (ESLAnkerP2PService, plain 1961)", async () => {
+    expect(await sent("T8530P0000000000", "T8530", 55)).toMatchObject({
+      kind: "set-payload",
+      cmd: 1961,
+      payload: { userId: OWNER },
+    });
+  });
 });
