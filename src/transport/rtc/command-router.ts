@@ -301,8 +301,10 @@ export class RtcCommandRouter {
    * Talk to a camera as the app's RTC player does, inside its live view: once the view shows video, `start_intercom`
    * goes out, and once it succeeds (its `ANKE` answer, or its write on the data channel) one 20 ms Opus packet per
    * write follows on the view's PM call ({@link RtcPmLiveStream.sendAudio}), paced by {@link Talkback}; audio before
-   * that is dropped, as the app's mic track stays off, and a failed start ends the talkback. `stop_intercom` closes it. The view is held while talking and ends the talkback with
-   * it. One talkback per station: its PM call carries one audio track.
+   * that is dropped, as the app's mic track stays off. A failed start is reported as `error` and leaves the talkback
+   * open and silent, as the app's player sits in its Failed state: `stop_intercom` goes out only when it is stopped or
+   * its view ends, as the app's `stopTalk` / `release` send it from any state but Idle. The view is held while talking
+   * and ends the talkback with it. One talkback per station: its PM call carries one audio track.
    */
   private async openTalkback(
     route: RtcLiveRoute,
@@ -325,7 +327,6 @@ export class RtcCommandRouter {
             const e = new Error(`talkback: ${route.cameraSn} did not take start_intercom`);
             if (talk.listenerCount("error")) talk.emit("error", e);
             else this.deps.logger?.warn(e.message);
-            void talk.stop();
           });
         },
         sendAudioFrame: (_channel, packet) => speaking && pm()?.sendAudio(packet),
