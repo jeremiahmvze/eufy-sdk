@@ -13,6 +13,7 @@ import type { AvailabilityContext, CommandContext } from "./types.js";
 import { reflectCommand, type Command, type LiveFrames, type SessionFrame } from "../../core/contracts.js";
 import type { ThingMember } from "./thing-description.js";
 import DATA from "./bundle-wires.generated.json" with { type: "json" };
+import TIMEZONES from "./timezones.json" with { type: "json" };
 
 /**
  * One frame a product's settings bundle answers a write with, by the transport it rides:
@@ -310,6 +311,34 @@ type RawOf = (param: number) => string | undefined;
 /** Whether the app writes and reads `identifier` on this product in its own Java, so the bundle's data does not. */
 const javaOverridden = (identifier: string, ctx: AvailabilityContext): boolean =>
   bundleEntry(identifier, ctx)?.override === "java";
+
+/** The app's zone table, `id → [POSIX rule, sn]`, in its order. */
+const ZONES = TIMEZONES as unknown as Readonly<Record<string, readonly [rule: string, sn: string]>>;
+
+/**
+ * `timezone_set` as the app's own code writes it: the id sent as `<rule>|1.<sn>|<id>` (`""` for an id not
+ * in its table) in a 1215 string body, on 255 under a station; nothing where the description routes it
+ * through `timezone_set_redirect`, whose frames are baked for `"0"`/`"1"` only.
+ */
+function timezoneWrite(id: string, ctx: CommandContext): Command | undefined {
+  if (ctx.things?.properties.timezone_set_redirect) return undefined;
+  const zone = ZONES[id];
+  const value = zone ? `${zone[0]}|1.${zone[1]}|${id}` : "";
+  const channel = isStationSerial(ctx.stationSerial ?? ctx.serial ?? "") ? 255 : ctx.channel;
+  return { kind: "p2p-string", cmd: 1215, value, channel };
+}
+
+/** A reported zone as the app maps it to an id: by its `|1.` sn, else its rule or id, else its last `|` part. */
+function timezoneRead(s: string): string {
+  const sn = s.split("|1.")[1]?.split("|")[0];
+  const last = s.includes("/") ? s.split("|").at(-1) : undefined;
+  const entries = Object.entries(ZONES);
+  const hit =
+    entries.find(([, [, n]]) => n === sn) ??
+    entries.find(([id, [rule]]) => rule === s || id === s) ??
+    entries.find(([id]) => id === last);
+  return hit?.[0] ?? s;
+}
 
 /** A read's `>` ranks, each its `+`-joined params. */
 const ranksOf = (read: BundleRead | undefined): number[][] =>
@@ -966,6 +995,7 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
  * frame where the value carries the host's own field (`$input.nick_name`): the row the bundle answered for it.
  */
 export function thingWrite(identifier: string, value: string, ctx: CommandContext, key = value): Command | undefined {
+  if (identifier === "timezone_set") return timezoneWrite(value, ctx);
   if (javaOverridden(identifier, ctx)) return undefined;
   // A `{paramType, param}` lock settings write (JSON): its frame is the paramType's, its marks the param's fields.
   const struct = structOf(value);
@@ -1281,6 +1311,7 @@ function structOf(value: string): { paramType: number; param: Record<string, unk
 
 /** The raw value `param` (by default the first the bundle reads) holds for `identifier`'s `value`. */
 export function thingReadback(identifier: string, value: string, ctx: AvailabilityContext, param?: number) {
+  if (identifier === "timezone_set") return { param: 1215, raw: value };
   const read = bundleEntry(identifier, ctx)?.read;
   param ??= ranksOf(read)[0]?.[0];
   const raw = read && param !== undefined ? rawOn(read, param, value) : undefined;
@@ -1296,6 +1327,10 @@ export function thingRead(
   ctx: AvailabilityContext,
   raw: (param: number) => string | undefined,
 ): string | undefined {
+  if (identifier === "timezone_set") {
+    const s = raw(1215);
+    return s === undefined ? undefined : timezoneRead(s);
+  }
   if (javaOverridden(identifier, ctx)) return undefined;
   const read = bundleEntry(identifier, ctx)?.read;
   for (const rank of ranksOf(read)) {
