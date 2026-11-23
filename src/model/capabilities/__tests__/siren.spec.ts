@@ -366,61 +366,27 @@ describe("siren capability module", () => {
       expect((acts as unknown as Record<string, unknown>).test).toBeUndefined();
     });
 
-    it.each(["T8134", "T814X", "T8214", "T8790", "T8122", "T8113-Z", "T8400"])(
-      "installs the alarm on a %s behind a HomeBase S1 Pro and sends it the portal's form",
-      async (model) => {
-        const { acts, sent } = sirenOf({
-          channel: 3,
-          codec: "camera",
-          deviceType: DeviceType.CAMERA2,
-          model,
-          homeBaseAttached: true,
-          stationDeviceType: DeviceType.STATION_9000,
-          accountName: "Synthetic Home",
-          capabilities: new Set(["siren"]),
-          paramIds: new Set([1015, 61008, 1825, 61006]),
-        });
-        const alarm = acts as unknown as { trigger?: (s: number) => Promise<void>; stop?: () => Promise<void> };
-
-        await alarm.trigger!(5);
-        await alarm.stop!();
-        expect(sent).toEqual([
-          {
-            kind: "set-payload",
-            cmd: 1202,
-            payload: { time_out: 5, type: 10, channel: 3, username: "Synthetic Home" },
-            channel: 3,
-            mValue3: undefined,
-            form: undefined,
-          },
-          {
-            kind: "set-payload",
-            cmd: 1202,
-            payload: { time_out: 0, type: 10, channel: 3, username: "Synthetic Home" },
-            channel: 3,
-            mValue3: undefined,
-            form: undefined,
-          },
-        ]);
-      },
-    );
-
-    it("installs no alarm action on a camera behind a HomeBase S1 Pro for a model with no evidence for the portal form", () => {
-      const { acts } = sirenOf({
-        channel: 2,
+    /** A T9000 child: the station's DeviceType rides along but picks no wire, as the app's bundles give it none. */
+    const s1Pro = { stationSerial: "T9000P0000000000", stationDeviceType: DeviceType.STATION_9000 };
+    it.each(["T8134", "T8114"])("sends a %s behind a HomeBase S1 Pro the app's int-plus-string form", async (model) => {
+      const { acts, sent } = sirenOf({
+        ...s1Pro,
+        channel: 3,
         codec: "camera",
         deviceType: DeviceType.CAMERA2,
-        model: "T8114",
+        model,
         homeBaseAttached: true,
-        stationDeviceType: DeviceType.STATION_9000,
-        accountName: "Synthetic Home",
         capabilities: new Set(["siren"]),
         paramIds: new Set([1015, 61008, 1825, 61006]),
       });
-      const alarm = acts as unknown as Record<string, unknown>;
+      const alarm = acts as unknown as { trigger?: (s: number) => Promise<void>; stop?: () => Promise<void> };
 
-      expect(alarm.trigger).toBeUndefined();
-      expect(alarm.stop).toBeUndefined();
+      await alarm.trigger!(5);
+      await alarm.stop!();
+      expect(sent).toEqual([
+        { kind: "p2p-int-string", cmd: 1202, value: 5, valueSub: 3, channel: 3 },
+        { kind: "p2p-int-string", cmd: 1202, value: 0, valueSub: 3, channel: 3 },
+      ]);
     });
 
     it.each([

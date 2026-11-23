@@ -1,6 +1,6 @@
 import { DeviceType } from "../device-types.js";
 import { coerceEnumValue, enumLabels } from "../../core/util.js";
-import { HOMEBASE_TYPES, isHomeBase, isStation9000 } from "../device-family.js";
+import { HOMEBASE_TYPES, isHomeBase } from "../device-family.js";
 import { hasReportedEasSwitch } from "./camera.js";
 import { setPayload, setStationScalar } from "./access.js";
 import { bundled } from "./bundle.js";
@@ -83,31 +83,9 @@ function isEvidencedStationAlarm(ctx: CommandContext): boolean {
   return isStationAlarmOutput(ctx) && HUB_ALARM_EVIDENCE.some((param) => ctx.paramIds.has(param));
 }
 
-/**
- * The camera models the portal's `1350` alarm form applies to behind a HomeBase S1 Pro (T9000). Any other
- * model there gets no alarm members.
- */
-const S1_PRO_ALARM_MODELS: ReadonlySet<string> = new Set([
-  "T8134",
-  "T814X",
-  "T8214",
-  "T8790",
-  "T8122",
-  "T8113-Z",
-  "T8400",
-]);
-
-/**
- * Whether an attached camera reports the EAS slot that carries its own manual alarm output and, behind a
- * HomeBase S1 Pro, is a model in {@link S1_PRO_ALARM_MODELS}.
- */
+/** Whether an attached camera reports the EAS slot that carries its own manual alarm output. */
 function isEvidencedAttachedCamera(ctx: CommandContext): boolean {
-  return (
-    ctx.codec === "camera" &&
-    ctx.homeBaseAttached === true &&
-    hasReportedEasSwitch(ctx) &&
-    (!isStation9000({ deviceType: ctx.stationDeviceType }) || S1_PRO_ALARM_MODELS.has(ctx.model ?? ""))
-  );
+  return ctx.codec === "camera" && ctx.homeBaseAttached === true && hasReportedEasSwitch(ctx);
 }
 
 /** Whether a model-side record or bound context reports a specific parameter. */
@@ -151,29 +129,12 @@ function homeBaseAlarm(seconds: number, ctx: CommandContext): Command {
   );
 }
 
-/** The manual-alarm `type` the portal sends to a camera behind a HomeBase S1 Pro. */
-const PORTAL_MANUAL_ALARM_TYPE = 10;
-
 /**
- * Build the attached-camera duration command for its own bound device channel. Behind a HomeBase S1
- * Pro (`STATION_9000`) it is the portal's `1350` SET_PAYLOAD form, `{time_out, type, channel,
- * username}` with the acting account name; behind any other HomeBase it is the app's int-plus-string
- * form.
+ * Build the attached-camera duration command for its own bound device channel: the app's int-plus-string
+ * form behind every HomeBase, a T9000 included (its bundles' `set_alarm_type` give that connect type no
+ * branch of its own).
  */
 function cameraAlarm(seconds: number, ctx: CommandContext): Command {
-  if (isStation9000({ deviceType: ctx.stationDeviceType })) {
-    if (!ctx.accountName) throw new Error("a camera alarm behind a HomeBase S1 Pro requires the acting account name");
-    return setPayload(
-      SIREN_CMD.CAMERA_TONE,
-      {
-        time_out: seconds,
-        type: PORTAL_MANUAL_ALARM_TYPE,
-        channel: ctx.channel,
-        username: ctx.accountName,
-      },
-      ctx,
-    );
-  }
   return {
     kind: "p2p-int-string",
     cmd: SIREN_CMD.CAMERA_TONE,
