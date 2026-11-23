@@ -1552,8 +1552,7 @@ export class EufyMega extends EventEmitter {
   /**
    * Inspect one device by serial: resolve its codec/capabilities, cross-reference every reported
    * `param_type` against the param dictionary, and emit a paste-ready `registry.ts` row plus
-   * dictionary snippets for anything unknown. Loads the device list if needed; prefers
-   * the live `get_device_param_list` for freshest params, falling back to the device-list params.
+   * dictionary snippets for anything unknown, from the device-list params.
    */
   async inspectDevice(sn: string): Promise<DeviceInspection> {
     return this.registry.inspectDevice(sn);
@@ -1586,7 +1585,7 @@ export class EufyMega extends EventEmitter {
    * Build a live {@link Device} model object for one serial: the resolved codec/capabilities with
    * its current param values applied (named via the param dictionary; unknown ids kept as
    * `unknown_<pt>`). This is the device primitive — `dev.getProperties()`, `dev.has(cap)`, etc.
-   * Prefers fresh `get_device_param_list`, falls back to the device-list params.
+   * Params come from the device list.
    * Under auto-realtime the returned Device is wired with a read-through freshness cache (see
    * {@link Device.setFreshnessPolicy}), so repeat reads are served from cache instead of re-fetching,
    * and realtime updates keep values fresh.
@@ -2526,8 +2525,7 @@ export class EufyMega extends EventEmitter {
    * command variant (channel, codec, deviceType, model, reported param/DP ids) plus the RESOLVED
    * capability set that gates command building.
    *
-   * Resolves from the same fresh `DeviceRegistry.record` (`get_device_param_list` overlay +
-   * category) and `resolveDevice` that {@link getDevice} uses, so the capability set here is byte-for-byte
+   * Resolves from the same `DeviceRegistry.record` (device-list params + category) and `resolveDevice` that {@link getDevice} uses, so the capability set here is byte-for-byte
    * what `device.has(cap)` / `buildActions` saw — a command is never rejected for a capability the
    * device model advertises.
    *

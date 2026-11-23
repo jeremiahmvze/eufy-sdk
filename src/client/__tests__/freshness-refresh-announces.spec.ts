@@ -150,7 +150,7 @@ describe("a failed read-through refresh", () => {
   it("reports a dead session as sessionExpired instead of rejecting a promise nobody holds", async () => {
     const { eufy } = withFreshnessPolicy();
     const dev = await eufy.getDevice("T8000P0000000000");
-    const expired = new SessionExpiredError("/app/devicemanage/get_device_param_list failed (401/401): token error");
+    const expired = new SessionExpiredError("/app/house/get_devs_list failed (401/401): token error");
     vi.spyOn((eufy as any).registry, "record").mockRejectedValue(expired);
     const reported: unknown[] = [];
     eufy.on("sessionExpired", (e) => reported.push(e));
