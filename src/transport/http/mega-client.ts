@@ -68,7 +68,7 @@ export interface MegaClientConfig {
   /**
    * Acting name written into the commands that carry an actor field — guard mode (`user_name`), a
    * lock's acting username. Trimmed, and blank counts as unset: the default is the account's
-   * {@link MegaHttpClient.accountName}. Attribution only — the device stores it for its own activity record.
+   * `MegaHttpClient.accountName`. Attribution only — the device stores it for its own activity record.
    */
   accountName?: string;
   /** Persist + reuse the session (token + session key) across runs. Default: in-memory. */
