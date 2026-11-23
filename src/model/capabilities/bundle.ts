@@ -1177,6 +1177,19 @@ const TRANSFORMS: Record<string, (v: unknown, input: Row, param?: Param, td?: Td
       return undefined;
     }
   },
+  /** `asPrivacyZonePot`, sensor 1: each `privacyZoneList` entry `{index, pots}` as `{index, points}`, its pots' points in one list. */
+  ipcPrivacyList: (v, _, __, td = VIDEO) => {
+    try {
+      return {
+        polygens: (v as { index: unknown; pots: { points: Row[] }[] }[]).map(({ index, pots }) => ({
+          index,
+          points: pots.flatMap((p) => p.points.map(devicePot(td.normalized === 1, td))),
+        })),
+      };
+    } catch {
+      return undefined;
+    }
+  },
   /** `SetPrivacyZoneParser1295`. */
   privacyRect: (v, input, _, td = VIDEO) => privacyRect(v, input, td),
   /** `SetActiveZoneParserV2` v4: pixel-scaled whatever the description says. */

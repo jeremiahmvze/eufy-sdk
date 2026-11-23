@@ -1027,6 +1027,45 @@ describe("the regenerated data's forms", () => {
     });
   });
 
+  it("writes the second lens's privacy from its privacyZoneList (T8172 6478, T8217 6477), nothing from pots", () => {
+    const points = [
+      { x: 0.1, y: 0.2 },
+      { x: 0.6, y: 0.15 },
+      { x: 0.7, y: 0.8 },
+    ];
+    const sent = (zone: object, model = "T8172") =>
+      thingWrite("set_privacy_zone", JSON.stringify({ index: 0, sensor_id: 1, ...zone }), ctx(model));
+    expect(sent({ privacyZoneList: [{ index: 2, pots: [{ points }, { points: [points[0]] }] }] })).toMatchObject({
+      cmd: 6478,
+      payload: {
+        list: [
+          {
+            sensor_id: 1,
+            privacyzone: {
+              polygens: [
+                {
+                  index: 2,
+                  points: [
+                    { x: 101, y: 201 },
+                    { x: 601, y: 151 },
+                    { x: 701, y: 801 },
+                    { x: 101, y: 201 },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    const list = { privacyZoneList: [] };
+    expect(sent(list, "T8217"), "SetPrivacyZoneIPC_0Parser").toMatchObject({
+      cmd: 6477,
+      payload: { list: [{ sensor_id: 1 }] },
+    });
+    expect(sent({ pots: [{ points }] }), "the {pots} shape: the bundle throws").toBeUndefined();
+  });
+
   it("reads the response-timeout schedule as the bundle re-stringifies it, a looping one unwrapped", () => {
     const read = (o: unknown) =>
       thingRead("device_response_timeout_schedule", ctx("T8214"), (p) =>
