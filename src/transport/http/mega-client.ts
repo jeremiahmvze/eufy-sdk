@@ -292,6 +292,20 @@ const CONTENDED_SESSION_HINT =
  * anchor for wordings that state their reason beside it (`"token = … expired"`), so removing the echo before
  * matching would lose a real expiry and leave a dead session uncleared.
  */
+/** A device-share invitation as `confirm_invite`/`ignore_invite` name it: the invite's `id`, serials, category, owner `user_id`. */
+type ShareInviteRef = {
+  invite_id: number;
+  device_sn: string;
+  sub_sns: string;
+  category: string;
+  owner_user_id: string;
+};
+
+/** The body the app's `HouseInviteOkRequest(house_id, is_inviter, invite_id)` serialises. */
+function houseInvite(houseId: string, inviteId: number, isInviter: number) {
+  return { house_id: houseId, is_inviter: isInviter, invite_id: inviteId, categories: [], add_pns: [] };
+}
+
 function tokenRejected(code: number | undefined, msg: string | undefined): boolean {
   return (
     code === EufyCloudErrorCode.SESSION_KICKED ||
@@ -919,6 +933,164 @@ export class MegaHttpClient {
       { attribute: 7, house_id: "" },
       { category: "eufy_home" },
     );
+  }
+
+  /**
+   * Share devices with another eufy account by email, as the app's family module sends it
+   * (`app/devicerelation/device_invite`). Each invite names a device and the role it grants: `member_type` 0 guest,
+   * 1 admin (the app forces 1 on `eufy_pet`). `permissions` goes out 0, as every 6.1.32 invite does. Answers
+   * whether the cloud mailed the invitee. Only devices this account administers (`memberType` 1 or 2) can be shared.
+   */
+  async inviteShare(
+    email: string,
+    nickName: string,
+    invites: ReadonlyArray<{
+      device_sn: string;
+      category: string;
+      member_type: number;
+      device_name?: string;
+      sub_sns?: string;
+    }>,
+  ): Promise<boolean> {
+    const body = invites.map((i) => ({
+      permissions: 0,
+      encrypted_data: "",
+      sub_sns: "",
+      ...i,
+      member_type: i.category === "eufy_pet" ? 1 : i.member_type,
+    }));
+    const r = await this.post<{ email_sent?: boolean }>("devicerelation", "/app/devicerelation/device_invite", {
+      email,
+      nick_name: nickName,
+      invites: body,
+    });
+    return !!r?.email_sent;
+  }
+
+  /** The members this account shares devices with (`get_related`, `relateds`), one page of 300 as the app asks. */
+  async getShareMembers<T = unknown>(): Promise<T[]> {
+    const r = await this.post<{ relateds?: T[] }>("devicerelation", "/app/devicerelation/get_related", {
+      num: 300,
+      page: 0,
+      orderby: "",
+      categories: [],
+      add_pns: [],
+    });
+    return r?.relateds ?? [];
+  }
+
+  /**
+   * Pending device-share invitations (`get_invites`, `invites`): the ones this account sent when `asOwner`, else the
+   * ones addressed to it. The app's `is_inviter` is the inverse of its `own` flag: 0 on the owner's screen, 1 on the
+   * invitee's.
+   */
+  async getShareInvites<T = unknown>(asOwner: boolean): Promise<T[]> {
+    const r = await this.post<{ invites?: T[] }>("devicerelation", "/app/devicerelation/get_invites", {
+      is_inviter: asOwner ? 0 : 1,
+      categories: [],
+      add_pns: [],
+    });
+    return r?.invites ?? [];
+  }
+
+  /** Accept invitations addressed to this account (`confirm_invite`); each entry is read off a received invite. */
+  async confirmShareInvites(invites: ReadonlyArray<ShareInviteRef>): Promise<void> {
+    await this.post("devicerelation", "/app/devicerelation/confirm_invite", { invites });
+  }
+
+  /** Decline a received invitation, or with `asOwner` withdraw one this account sent (`ignore_invite`). */
+  async ignoreShareInvites(
+    invites: ReadonlyArray<ShareInviteRef & { recevicer_user_id?: string }>,
+    asOwner: boolean,
+  ): Promise<void> {
+    await this.post("devicerelation", "/app/devicerelation/ignore_invite", { invites, is_inviter: asOwner ? 0 : 1 });
+  }
+
+  /**
+   * Change what a member holds (`update_share`): per device its role, or `is_delete` to take it away. The app
+   * removes a member by sending every shared device with `is_delete: true`.
+   */
+  async updateShare(
+    member: { user_id: string; nick_name: string; receive_email: string },
+    devices: ReadonlyArray<{
+      device_sn: string;
+      category: string;
+      member_type: number;
+      is_delete?: boolean;
+      sub_devices?: ReadonlyArray<{ device_sn: string; is_delete: boolean }>;
+    }>,
+  ): Promise<void> {
+    await this.post("devicerelation", "/app/devicerelation/update_share", {
+      ...member,
+      devices: devices.map((d) => ({ permissions: 0, is_delete: false, sub_devices: [], ...d })),
+    });
+  }
+
+  /** Promote a guest on the given devices (`promote_guest`). */
+  async promoteGuest(userId: string, devices: ReadonlyArray<{ device_sn: string; category: string }>): Promise<void> {
+    await this.post("devicerelation", "/app/devicerelation/promote_guest", {
+      device_sn: "",
+      user_id: userId,
+      promote_devices: devices,
+    });
+  }
+
+  /**
+   * Leave a device shared with this account (`clear_share`), what the app sends where an owner would unbind:
+   * `device_sn` the device's station (its own serial when it has none), `sub_sns` the device, `owner_user_id` the
+   * record's `user_id`.
+   */
+  async clearShare(share: {
+    device_sn: string;
+    sub_sns: string;
+    category: string;
+    owner_user_id: string;
+  }): Promise<void> {
+    await this.post("devicerelation", "/app/devicerelation/clear_share", share);
+  }
+
+  /** Invite an account by email into a whole home (`app/house/invite_house_member`). */
+  async inviteHouseMember(houseId: string, email: string): Promise<void> {
+    await this.post("house", "/app/house/invite_house_member", {
+      house_id: houseId,
+      email,
+      encrypted_data: "",
+      categories: [],
+      add_pns: [],
+    });
+  }
+
+  /** Home invitations addressed to this account (`get_house_invite_records`, `house_invite_records`). */
+  async getHouseInvites<T = unknown>(): Promise<T[]> {
+    const r = await this.post<{ house_invite_records?: T[] }>("house", "/app/house/get_house_invite_records", {
+      is_inviter: 1,
+    });
+    return r?.house_invite_records ?? [];
+  }
+
+  /** Accept a home invitation (`confirm_house_invited`); `inviteId` is the record's `id`. */
+  async confirmHouseInvite(houseId: string, inviteId: number): Promise<void> {
+    await this.post("house", "/app/house/confirm_house_invited", houseInvite(houseId, inviteId, 1));
+  }
+
+  /** Decline a home invitation, or with `asOwner` withdraw one this account sent (`ignore_house_invited`). */
+  async ignoreHouseInvite(houseId: string, inviteId: number, asOwner: boolean): Promise<void> {
+    await this.post("house", "/app/house/ignore_house_invited", houseInvite(houseId, inviteId, asOwner ? 0 : 1));
+  }
+
+  /** Remove a member from a home this account owns (`remove_house_user`). */
+  async removeHouseUser(houseId: string, userId: string): Promise<void> {
+    await this.post("house", "/app/house/remove_house_user", {
+      house_id: houseId,
+      user_id: userId,
+      categories: [],
+      add_pns: [],
+    });
+  }
+
+  /** Leave a home shared with this account (`clear_share_member`). */
+  async leaveHouse(houseId: string): Promise<void> {
+    await this.post("house", "/app/house/clear_share_member", { house_id: houseId, categories: [], add_pns: [] });
   }
 
   /**
