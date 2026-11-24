@@ -1200,3 +1200,59 @@ test("timezone_set: written, read and reflected as the app's own code does, redi
   const own = index.thingValue("timezone_set", { ...standalone, deviceTimezone: berlin }, () => undefined);
   expect(own, "the device record's zone when 1215 is unreported").toBe("Europe/Berlin");
 });
+
+describe("legacy floodlight writes the app sends in Java", () => {
+  const load = async () => {
+    vi.resetModules();
+    return { index: await import("../index.js"), ...(await import("../../../core/contracts.js")) };
+  };
+  test("timer_for_lights: the UI value's seconds on 1409, read back as the UI value", async () => {
+    const { index, commandReflection } = await load();
+    const td = things({ timer_for_lights: ["0", "1", "2", "3", "4"] });
+    const cmd = index.buildCommand("timer_for_lights", 2, ctx("T8423", { things: td }))!;
+    expect(cmd).toEqual({ kind: "set-param", param: 1409, value: 180, channel: 3 });
+    expect(commandReflection(cmd)).toEqual({ param: 1409, raw: "180" });
+    expect(index.buildCommand("timer_for_lights", 2, ctx("T8110", { things: td })), "RN-routed").toBeUndefined();
+    const read = (raw: string) => index.thingValue("timer_for_lights", ctx("T8420", { things: td }), () => raw);
+    expect(read("900")).toBe("4");
+    expect(read("5"), "unknown seconds").toBe("0");
+  });
+  test("spotlight_schedule_switch: the string body with the reported location and the switch as its int", async () => {
+    const { index } = await load();
+    const td = things({ spotlight_schedule_switch: "bool" });
+    const located = ctx("T8424", {
+      things: td,
+      paramValue: (p) => (p === 1415 ? '{"lat":"48.85","lng":"2"}' : undefined),
+    });
+    expect(index.buildCommand("spotlight_schedule_switch", true, located)).toEqual({
+      kind: "p2p-string",
+      cmd: 1414,
+      value: '{"lat": "48.85","lng": "2.0"}',
+      channel: 0,
+      int: 1,
+    });
+    const unlocated = ctx("T8424", { things: td });
+    expect(index.buildCommand("spotlight_schedule_switch", true, unlocated), "no location").toBeUndefined();
+    expect(index.buildCommand("spotlight_schedule_switch", false, unlocated)).toMatchObject({ value: "", int: 0 });
+    expect(index.buildCommand("spotlight_schedule_switch", true, { ...located, model: "T8425" })).toBeUndefined();
+    expect(index.thingValue("spotlight_schedule_switch", unlocated, (p) => (p === 1414 ? "1" : undefined))).toBe(
+      "true",
+    );
+  });
+  test("spotlight_schedule_config: the schedules as JSON on 255", async () => {
+    const { index } = await load();
+    const td = things({ spotlight_schedule_config: [""] });
+    const loop = [{ enable: 1, start_h: 18, start_m: 0, end_h: 6, end_m: 0, cross_day: 1, week: [0, 6] }];
+    const value = JSON.stringify({ loop });
+    expect(index.buildCommand("spotlight_schedule_config", value, ctx("T8420", { things: td }))).toEqual({
+      kind: "set-json-raw",
+      cmd: 1404,
+      data: { schedules: { loop: [{ ...loop[0], week: [{ day: 0 }, { day: 6 }] }], once: [] } },
+      channel: 255,
+    });
+    expect(
+      index.buildCommand("spotlight_schedule_config", value, ctx("T8110", { things: td })),
+      "RN-routed",
+    ).toBeUndefined();
+  });
+});

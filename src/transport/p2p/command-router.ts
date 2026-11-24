@@ -774,7 +774,7 @@ export class P2PCommandRouter {
       case "p2p-string":
         return (
           (await this.sendNativeBody(sn, cmd.cmd, 255, (accountId) =>
-            buildStringBody(cmd.channel, cmd.value, accountId),
+            buildStringBody(cmd.channel, cmd.value, accountId, cmd.int),
           )) === true
         );
       case "ff09-actuate":

@@ -375,11 +375,11 @@ export type Command =
         answerMs?: number;
       }
     /**
-     * The app's native string body (`[u32 0][u8 channel][value][account_id]`) on the station channel 255,
-     * `channel` the device's own: a rename (1216, 1217) or a time zone (1215). The transport injects the
-     * account id and the session seals it.
+     * The app's native string body (`[u16 int][u16 0][u8 channel][value][account_id]`) on the station channel 255,
+     * `channel` the device's own, `int` 0 unless given: a rename (1216, 1217), a time zone (1215) or a sunrise
+     * switch (1414). The transport injects the account id and the session seals it.
      */
-    | { kind: "p2p-string"; cmd: number; value: string; channel: number }
+    | { kind: "p2p-string"; cmd: number; value: string; channel: number; int?: number }
     /** P2P int-plus-string frame; the transport injects the authenticated account id string. */
     | {
         kind: "p2p-int-string";
