@@ -203,6 +203,12 @@ export interface EufyMegaOptions extends MegaClientConfig {
  */
 export interface HouseModeResult {
   sn: string;
+  /** The station's name, as the device list carries it. */
+  name?: string;
+  /** The guard mode the station is left in, by its `armingMode` label: the mode written once answered, else its own. */
+  mode: string;
+  /** That mode's arm delay in seconds as the station reports it, 0 where it reports none. */
+  armDelay: number;
   result: "skipped" | "answered" | "failed";
   error?: unknown;
 }

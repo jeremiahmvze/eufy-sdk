@@ -17,17 +17,25 @@ const SAME = "T8030P0000000002";
 const LOCK = "T8520P0000000000";
 const GUEST = "T8010P0000000000";
 const OTHER_HOUSE = "T8010P0000000001";
+const SHARED = "T8010P0000000002";
+const LIGHT = "T81A0P0000000000";
+const PRO = "T9000P0000000000";
 
 const common = { category: "eufy_security", api: "mega", realtime: "p2p", houseId: HOUSE, memberType: 2 };
 const FLEET = [
-  { ...common, sn: BASE, stationSn: BASE, params: { 1131: "1", 1224: "63" } },
-  { ...common, sn: SOLO, stationSn: SOLO, params: { 1131: "1" } },
+  { ...common, sn: BASE, stationSn: BASE, name: "Base", params: { 1131: "1", 1224: "63", 1172: "30" } },
+  { ...common, sn: SOLO, stationSn: SOLO, params: { 1131: "1", 1171: "15" } },
   { ...common, sn: OFFLINE, stationSn: OFFLINE, params: { 1131: "0", 1224: "63" } },
-  { ...common, sn: SAME, stationSn: SAME, params: { 1131: "1", 1224: "0" } },
+  { ...common, sn: SAME, stationSn: SAME, params: { 1131: "1", 1224: "0", 1172: "45" } },
   { ...common, sn: LOCK, stationSn: LOCK, params: { 1131: "1" } },
   { ...common, sn: GUEST, stationSn: GUEST, memberType: 0, params: { 1131: "1" } },
   { ...common, sn: OTHER_HOUSE, stationSn: OTHER_HOUSE, houseId: "house-1", params: { 1131: "1" } },
+  { ...common, sn: SHARED, stationSn: SHARED, houseId: undefined, params: { 1131: "1" } },
+  { ...common, sn: LIGHT, stationSn: BASE, params: { 1131: "0" } },
+  { ...common, sn: PRO, stationSn: PRO, params: { 1131: "1", 1224: "63", 1172: "99" } },
 ] as unknown as EufyDevice[];
+
+const PRO_AWAY = JSON.stringify({ count_down_arm: { channel_list: [], delay_time: 60 } });
 
 function client(stationSns: string[] | undefined, cloud: (path: string) => unknown = () => ({})) {
   const eufy = new EufyMega({ email: "t@example.com", password: "x" });
@@ -48,6 +56,16 @@ function client(stationSns: string[] | undefined, cloud: (path: string) => unkno
     channel: 0,
     paramIds: new Set(),
     serial: sn,
+    ...(sn === PRO
+      ? {
+          model: "T9000",
+          things: {
+            properties: {
+              arming_get_alarm_away_mode: { identifier: "arming_get_alarm_away_mode", defaultValue: PRO_AWAY },
+            },
+          },
+        }
+      : {}),
   }));
   t.routeAndReflect = async (sn: string, cmd: Command) => (sent.push([sn, cmd]), sn !== SOLO);
   return { eufy, posts, sent };
@@ -68,16 +86,31 @@ describe("setHouseMode", () => {
       [SOLO, "p2p-station-scalar", 0],
     ]);
     expect(results).toEqual([
-      { sn: BASE, result: "answered" },
-      { sn: SOLO, result: "failed" },
-      { sn: OFFLINE, result: "skipped" },
-      { sn: SAME, result: "skipped" },
+      { sn: BASE, name: "Base", mode: "away", armDelay: 30, result: "answered" },
+      { sn: SOLO, mode: "home", armDelay: 15, result: "failed" },
+      { sn: OFFLINE, mode: "disarmed", armDelay: 0, result: "skipped" },
+      { sn: SAME, mode: "away", armDelay: 45, result: "skipped" },
     ]);
+  });
+
+  it("reads a T9000's arm delay off its mode's thing property", async () => {
+    const c = client([PRO]);
+    expect(await c.eufy.setHouseMode(HOUSE, ArmingMode.away)).toEqual([
+      { sn: PRO, mode: "away", armDelay: 60, result: "answered" },
+    ]);
+  });
+
+  it("gives an attached T81A0 reporting offline its station's online answer", async () => {
+    const c = client([LIGHT]);
+    await c.eufy.setHouseMode(HOUSE, ArmingMode.away);
+    expect(c.sent.map(([sn]) => sn)).toEqual([LIGHT]);
   });
 
   it("treats an unreported mode as home", async () => {
     const c = client([SOLO]);
-    expect(await c.eufy.setHouseMode(HOUSE, ArmingMode.home)).toEqual([{ sn: SOLO, result: "skipped" }]);
+    expect(await c.eufy.setHouseMode(HOUSE, ArmingMode.home)).toEqual([
+      { sn: SOLO, mode: "home", armDelay: 15, result: "skipped" },
+    ]);
   });
 
   it("falls back to the house's own stations the app arms when the config names none it knows", async () => {
@@ -85,6 +118,15 @@ describe("setHouseMode", () => {
     await c.eufy.setHouseMode(HOUSE, ArmingMode.disarmed);
     expect(c.posts[0]?.[2]).toEqual({ house_id: HOUSE, arm_status: 3 });
     expect(c.sent.map(([sn]) => sn)).toEqual([SOLO, SAME]);
+  });
+
+  it('falls back to every listed station for house "" and the house-less ones for "shared.devices"', async () => {
+    const all = client([]);
+    await all.eufy.setHouseMode("", ArmingMode.disarmed);
+    expect(all.sent.map(([sn]) => sn)).toEqual([SOLO, SAME, OTHER_HOUSE, SHARED]);
+    const shared = client([]);
+    await shared.eufy.setHouseMode("shared.devices", ArmingMode.disarmed);
+    expect(shared.sent.map(([sn]) => sn)).toEqual([SHARED]);
   });
 
   it("sends nothing when the cloud refuses the config", async () => {

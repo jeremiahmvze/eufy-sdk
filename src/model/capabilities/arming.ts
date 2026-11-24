@@ -1,4 +1,4 @@
-import { enumLabels, isStationSerial } from "../../core/util.js";
+import { enumLabels, isStationSerial, jsonObject } from "../../core/util.js";
 import { DeviceType } from "../device-types.js";
 import { describeDevice, setJsonRaw, setPayload, setStationScalar } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
@@ -256,6 +256,29 @@ export function armedWithHouse(device: Pick<EufyDevice, "sn" | "stationSn" | "ca
 
 /** The `arm_status` the house's cloud config takes for each {@link ArmingMode}. @internal */
 export const HOUSE_ARM_STATUS: Record<ArmingMode, number> = { home: 1, away: 2, disarmed: 3 };
+
+/**
+ * A station's guard mode `wire` as its `armingMode` label, and that mode's arm delay in seconds as the app reads
+ * it for the house result: param 1171 (home) or 1172 (away), else 0; on a T9000 the `count_down_arm.delay_time`
+ * of its `arming_get_alarm_away_mode` property for away, `arming_get_alarm_home_mode` for any other. @internal
+ */
+export function houseArmingState(
+  wire: number,
+  sn: string,
+  raw: (param: number) => string | undefined,
+  thing: (identifier: string) => string | undefined,
+): { mode: string; armDelay: number } {
+  const delay = sn.startsWith("T9000")
+    ? (
+        jsonObject(thing(`arming_get_alarm_${wire === 0 ? "away" : "home"}_mode`))?.count_down_arm as
+          Record<string, unknown> | undefined
+      )?.delay_time
+    : wire === 1 || wire === 0
+      ? raw(wire === 1 ? 1171 : 1172)
+      : undefined;
+  const armDelay = Number.parseInt(String(delay), 10);
+  return { mode: ARMING_MODE_LABELS[wire] ?? String(wire), armDelay: Number.isNaN(armDelay) ? 0 : armDelay };
+}
 
 /**
  * Alarm-delay durations the app's OWN picker UI offers — `AlarmDelaySeconds` is both the const

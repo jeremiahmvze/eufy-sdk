@@ -44,6 +44,7 @@ import {
   hasRealtimeReads,
   needsRealtimeInit,
   hasProvidedAction,
+  thingValue,
 } from "../model/capabilities/index.js";
 import type { DeviceEventMap } from "../model/capabilities/index.js";
 import type { CommandContext } from "../model/capabilities/types.js";
@@ -81,7 +82,13 @@ import { isHomeBase, isTuyaVacuum, isVideoSmartLock } from "../model/device-fami
 import { DeviceType } from "../model/device-types.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { liveFrames, rtcLiveFrames } from "../model/capabilities/bundle.js";
-import { armedWithHouse, armingModeCommand, HOUSE_ARM_STATUS, type ArmingMode } from "../model/capabilities/arming.js";
+import {
+  armedWithHouse,
+  armingModeCommand,
+  HOUSE_ARM_STATUS,
+  houseArmingState,
+  type ArmingMode,
+} from "../model/capabilities/arming.js";
 import { DeviceRegistry, recordString, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import { PushRepeats } from "./push-repeats.js";
 import type {
@@ -2198,10 +2205,12 @@ export class EufyMega extends EventEmitter {
    * (`update_home_config`, `arm_status` 1 home, 2 away, 3 disarmed); a refusal rejects and nothing is sent. The
    * stations are then the ones its `get_home_config` names that the device list carries, else the house's own:
    * a station or a device that is its own, `eufy_security`, not held as a guest, and not a SmartDrop, lock
-   * (bar the T8531 and T85V0), T8021, safe, tracker or chime. Each one online (param 1131 `"1"`, or an open P2P
-   * session) whose 1224 (unreported: home) is not already the mode is written at once and awaited 6 s: the
-   * `1350` envelope `{mode_type, user_name}` on a platform-V2 device, else the direct 1224 frame. Resolves once
-   * all have answered, with each station's {@link HouseModeResult}, whatever they answered.
+   * (bar the T8531 and T85V0), T8021, safe, tracker or chime. House `""` takes every listed device,
+   * `"shared.devices"` the ones in no house. Each one online (param 1131 `"1"`, or an open P2P session; an
+   * attached T81A0 reporting offline takes its station's answer) whose 1224 (unreported: home) is not already the
+   * mode is written at once and awaited 6 s: the `1350` envelope `{mode_type, user_name}` on a platform-V2
+   * device, else the direct 1224 frame. Resolves once all have answered, with each station's
+   * {@link HouseModeResult}, whatever they answered.
    *
    * @param houseId a house id, a device's {@link EufyDevice.houseId}.
    */
@@ -2215,18 +2224,33 @@ export class EufyMega extends EventEmitter {
     });
     const devices = this.registry.list().length ? this.registry.list() : await this.getDevices();
     const named = devices.filter((d) => config?.station_sns?.includes(d.sn));
-    const stations = named.length ? named : devices.filter((d) => d.houseId === houseId && armedWithHouse(d));
+    const house = houseId === "shared.devices" ? "" : houseId;
+    const inHouse = (d: EufyDevice) => houseId === "" || (d.houseId ?? "") === house;
+    const stations = named.length ? named : devices.filter((d) => inHouse(d) && armedWithHouse(d));
+    const online = (d: EufyDevice): boolean => {
+      if (this.registry.paramOf(d.sn, 1131) === "1") return true;
+      const parent = d.sn.startsWith("T81A0") && d.stationSn !== d.sn && devices.find((p) => p.sn === d.stationSn);
+      return parent ? online(parent) : !!this.p2p.getSessions().get(d.sn)?.isConnected;
+    };
     return Promise.all(
-      stations.map(async ({ sn }): Promise<HouseModeResult> => {
-        const online = this.registry.paramOf(sn, 1131) === "1" || !!this.p2p.getSessions().get(sn)?.isConnected;
-        const local = Number.parseInt(this.registry.paramOf(sn, 1224) ?? "", 10);
+      stations.map(async (d): Promise<HouseModeResult> => {
+        const { sn, name } = d;
+        const raw = (p: number) => this.registry.paramOf(sn, p);
+        const local = Number.parseInt(raw(1224) ?? "", 10);
+        const wire = Number.isNaN(local) ? 1 : local;
+        let thing = (_: string): string | undefined => undefined;
+        const at = (w: number) => ({ sn, ...(name ? { name } : {}), ...houseArmingState(w, sn, raw, thing) });
         try {
-          const cmd = armingModeCommand(mode, await this.commandContext(sn));
-          if (!online || String(Number.isNaN(local) ? 1 : local) === commandReflection(cmd)?.raw)
-            return { sn, result: "skipped" };
-          return { sn, result: (await this.routeAndReflect(sn, cmd)) ? "answered" : "failed" };
+          const ctx = await this.commandContext(sn);
+          thing = (id) => thingValue(id, ctx, raw);
+          const cmd = armingModeCommand(mode, ctx);
+          const target = Number(commandReflection(cmd)?.raw);
+          if (!online(d) || wire === target) return { ...at(wire), result: "skipped" };
+          return (await this.routeAndReflect(sn, cmd))
+            ? { ...at(target), result: "answered" }
+            : { ...at(wire), result: "failed" };
         } catch (error) {
-          return { sn, result: "failed", error };
+          return { ...at(wire), result: "failed", error };
         }
       }),
     );
