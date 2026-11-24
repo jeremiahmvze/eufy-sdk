@@ -1161,6 +1161,10 @@ test("timezone_set: written, read and reflected as the app's own code does, redi
     channel: 255,
   });
   expect(index.buildCommand("timezone_set", "Mars/Olympus", standalone)).toMatchObject({ value: "" });
+  const underCamera = { ...standalone, stationSerial: "T8214P0000000000", stationChannel: 1 };
+  expect(index.buildCommand("timezone_set", "Europe/Berlin", underCamera), "parent's channel").toMatchObject({
+    channel: 1,
+  });
   const redirect = ctx("T8028", { things: things({ timezone_set: ["0"], timezone_set_redirect: ["0"] }) });
   const sent = (zone: string) => {
     const { payload, ...rest } = index.buildCommand("timezone_set", zone, redirect) as any;
@@ -1182,4 +1186,6 @@ test("timezone_set: written, read and reflected as the app's own code does, redi
   expect(read("Japan")).toBe("Japan");
   expect(read("x|Asia/Tokyo"), "last part").toBe("Asia/Tokyo");
   expect(read(undefined)).toBeUndefined();
+  const own = index.thingValue("timezone_set", { ...standalone, deviceTimezone: berlin }, () => undefined);
+  expect(own, "the device record's zone when 1215 is unreported").toBe("Europe/Berlin");
 });

@@ -318,13 +318,13 @@ const ZONES = TIMEZONES as unknown as Readonly<Record<string, readonly [rule: st
 /**
  * `timezone_set` as the app's own code writes it: the id sent as `<rule>|1.<sn>|<id>` (`""` for an id not
  * in its table), through `timezone_set_redirect` where the description lists it, else in a 1215 string body,
- * on 255 under a station.
+ * on 255 under a station, else on the parent's channel.
  */
 function timezoneWrite(id: string, ctx: CommandContext): Command | undefined {
   const zone = ZONES[id];
   const value = zone ? `${zone[0]}|1.${zone[1]}|${id}` : "";
   if (ctx.things?.properties.timezone_set_redirect) return thingWrite("timezone_set_redirect", value, ctx);
-  const channel = isStationSerial(ctx.stationSerial ?? ctx.serial ?? "") ? 255 : ctx.channel;
+  const channel = isStationSerial(ctx.stationSerial ?? ctx.serial ?? "") ? 255 : (ctx.stationChannel ?? ctx.channel);
   return { kind: "p2p-string", cmd: 1215, value, channel };
 }
 
@@ -1328,7 +1328,7 @@ export function thingRead(
   raw: (param: number) => string | undefined,
 ): string | undefined {
   if (identifier === "timezone_set") {
-    const s = raw(1215);
+    const s = raw(1215) ?? ctx.deviceTimezone;
     return s === undefined ? undefined : timezoneRead(s);
   }
   if (javaOverridden(identifier, ctx)) return undefined;
