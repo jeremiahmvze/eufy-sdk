@@ -2210,12 +2210,11 @@ export class EufyMega extends EventEmitter {
    * (bar the T8531 and T85V0), T8021, safe, tracker or chime. House `""` takes every listed device,
    * `"shared.devices"` the ones in no house. Each one online whose 1224 (unreported: home) is not already the
    * mode is written at once and awaited 6 s: the `1350` envelope `{mode_type, user_name}` on a platform-V2
-   * device, else the direct 1224 frame. Online is the app's `device_is_online`, offline where the description
-   * lists none: in outdoor mode (6271 `"1"`) an open session to the device, else its station's 1140 reading on, or,
-   * off RTC, an open session to the station; an attached device also needs its 1131 on (unreported: a T8N00
-   * station). Without a description: 1131 `"1"`, or an open session; an attached T81A0 reporting offline takes its
-   * station's answer. Resolves once all have answered, with a {@link HouseModeResult} for each station except one
-   * that refused with code 1, -3 or -133 or whose session did not connect, which the app does not report either.
+   * device, else the direct 1224 frame. Online is the app's `device_is_online`, which {@link Device.thingValue}
+   * reads. A station failing before its write (no `user_name` for the envelope) rejects the call before anything
+   * is sent, as the app's use case then answers no station. Resolves once all have answered, with a
+   * {@link HouseModeResult} for each station except one that refused with code 1, -3 or -133 or whose session did
+   * not connect, which the app does not report either.
    *
    * @param houseId a house id, a device's {@link EufyDevice.houseId}.
    */
@@ -2232,48 +2231,63 @@ export class EufyMega extends EventEmitter {
     const house = houseId === "shared.devices" ? "" : houseId;
     const inHouse = (d: EufyDevice) => houseId === "" || (d.houseId ?? "") === house;
     const stations = named.length ? named : devices.filter((d) => inHouse(d) && armedWithHouse(d));
-    const param = (sn: string, p: number) => this.registry.paramOf(sn, p);
-    const linked = (sn: string) => !!this.p2p.getSessions().get(sn)?.isConnected;
-    const on = (v?: string) => v === "1" || v === "true" || v === "TRUE";
-    const online = (d: EufyDevice): boolean => {
-      const things = this.registry.thingsOf(d.sn);
-      if (things) {
-        if (!things.properties.device_is_online) return false;
-        if (param(d.sn, 6271) === "1") return linked(d.sn);
-        const st = d.stationSn || d.sn;
-        const hub = on(param(st, 1140)) || (!this.rtcRouteFor(st, "live") && linked(st));
-        const status = param(d.sn, 1131);
-        return st === d.sn ? hub : hub && (status === undefined ? st.startsWith("T8N00") : on(status));
-      }
-      if (param(d.sn, 1131) === "1") return true;
-      const parent = d.sn.startsWith("T81A0") && d.stationSn !== d.sn && devices.find((p) => p.sn === d.stationSn);
-      return parent ? online(parent) : linked(d.sn);
-    };
-    const settled = await Promise.all(
-      stations.map(async (d): Promise<HouseModeResult | undefined> => {
+    const writes = await Promise.all(
+      stations.map(async (d) => {
         const { sn, name } = d;
         const raw = (p: number) => this.registry.paramOf(sn, p);
         const local = Number.parseInt(raw(1224) ?? "", 10);
         const wire = Number.isNaN(local) ? 1 : local;
-        let thing = (_: string): string | undefined => undefined;
-        const at = (w: number) => ({ sn, ...(name ? { name } : {}), ...houseArmingState(w, sn, raw, thing) });
-        try {
-          const ctx = await this.commandContext(sn);
-          thing = (id) => thingValue(id, ctx, raw);
-          const cmd = armingModeCommand(mode, ctx);
-          const target = Number(commandReflection(cmd)?.raw);
-          if (!online(d) || wire === target) return { ...at(wire), result: "skipped" };
-          return (await this.routeAndReflect(sn, cmd))
-            ? { ...at(target), result: "answered" }
-            : { ...at(wire), result: "failed" };
-        } catch (error) {
-          const unrecorded = error instanceof CommandResultError && [1, -3, -133].includes(error.code ?? 0);
-          if (unrecorded || error instanceof StationUnreachableError) return undefined;
-          return { ...at(wire), result: "failed", error };
-        }
+        const ctx = await this.commandContext(sn);
+        const at = (w: number) => ({
+          sn,
+          ...(name ? { name } : {}),
+          ...houseArmingState(w, sn, raw, (id) => thingValue(id, ctx, raw)),
+        });
+        const cmd = armingModeCommand(mode, ctx);
+        const target = Number(commandReflection(cmd)?.raw);
+        const skipped: HouseModeResult = { ...at(wire), result: "skipped" };
+        if (!this.online(d) || wire === target) return async () => skipped;
+        return async (): Promise<HouseModeResult | undefined> => {
+          try {
+            return (await this.routeAndReflect(sn, cmd))
+              ? { ...at(target), result: "answered" }
+              : { ...at(wire), result: "failed" };
+          } catch (error) {
+            const unrecorded = error instanceof CommandResultError && [1, -3, -133].includes(error.code ?? 0);
+            if (unrecorded || error instanceof StationUnreachableError) return undefined;
+            return { ...at(wire), result: "failed", error };
+          }
+        };
       }),
     );
+    const settled = await Promise.all(writes.map((write) => write()));
     return settled.filter((r) => r !== undefined);
+  }
+
+  /**
+   * Whether `d` is online, as the app works out `device_is_online` on every read: offline where the description
+   * lists none; in outdoor mode (6271 `"1"`) an open session to the device, else its station's 1140 reading on,
+   * or, off RTC, an open session to the station; an attached device also needs its 1131 on (unreported: a T8N00
+   * station). Without a description: 1131 `"1"`, or an open session; an attached T81A0 reporting offline takes
+   * its station's answer.
+   */
+  private online(d: EufyDevice): boolean {
+    const param = (sn: string, p: number) => this.registry.paramOf(sn, p);
+    const linked = (sn: string) => !!this.p2p.getSessions().get(sn)?.isConnected;
+    const on = (v?: string) => v === "1" || v === "true" || v === "TRUE";
+    const things = this.registry.thingsOf(d.sn);
+    if (things) {
+      if (!things.properties.device_is_online) return false;
+      if (param(d.sn, 6271) === "1") return linked(d.sn);
+      const st = d.stationSn || d.sn;
+      const hub = on(param(st, 1140)) || (!this.rtcRouteFor(st, "live") && linked(st));
+      const status = param(d.sn, 1131);
+      return st === d.sn ? hub : hub && (status === undefined ? st.startsWith("T8N00") : on(status));
+    }
+    if (param(d.sn, 1131) === "1") return true;
+    const parent =
+      d.sn.startsWith("T81A0") && d.stationSn !== d.sn && this.registry.list().find((p) => p.sn === d.stationSn);
+    return parent ? this.online(parent) : linked(d.sn);
   }
 
   /**
@@ -2364,6 +2378,7 @@ export class EufyMega extends EventEmitter {
       updateAvailable: raw.needUpdate === true || raw.needUpdate === 1 || raw.needUpdate === "1",
       paramIds: new Set([...Object.keys(rec.params), ...Object.keys(rec.dpParams ?? {})].map(Number)),
       paramValue: (param) => rec.params[param],
+      online: () => this.online(dev),
       things: rec.things,
       capabilities: new Set(resolved.capabilities),
       // Member identity for ff09-* command devices (see core/contracts Ff09Identity).

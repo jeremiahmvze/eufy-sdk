@@ -156,6 +156,15 @@ describe("setHouseMode", () => {
     expect(results.map((r) => [r.sn, r.result])).toEqual([[PRO, "failed"]]);
   });
 
+  it("rejects and writes no station when one fails before its write, as the app's use case", async () => {
+    const c = client([BASE, SOLO]);
+    const t = c.eufy as any;
+    const context = t.commandContext;
+    t.commandContext = async (sn: string) => ({ ...(await context(sn)), ...(sn === SOLO ? { deviceType: 104 } : {}) });
+    await expect(c.eufy.setHouseMode(HOUSE, ArmingMode.away)).rejects.toThrow("user_name");
+    expect(c.sent).toEqual([]);
+  });
+
   it("sends nothing when the cloud refuses the config", async () => {
     const c = client([BASE], (path) => (path.endsWith("update_home_config") ? new Error("refused") : {}));
     await expect(c.eufy.setHouseMode(HOUSE, ArmingMode.away)).rejects.toThrow("refused");

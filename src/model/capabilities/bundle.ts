@@ -1321,7 +1321,7 @@ export function thingReadback(identifier: string, value: string, ctx: Availabili
 /**
  * `identifier`'s value as the bundle reads it from the params `raw` answers: the first `>` rank with a
  * reported param, the last reported of its `+` params, mapped; the description's default when none is.
- * `undefined` for `device_is_online`, which the app works out from its sessions and its station's params.
+ * `device_is_online` is worked out live ({@link AvailabilityContext.online}), never read.
  */
 export function thingRead(
   identifier: string,
@@ -1332,7 +1332,8 @@ export function thingRead(
     const s = raw(1215) ?? ctx.deviceTimezone;
     return s === undefined ? undefined : timezoneRead(s);
   }
-  if (identifier === "device_is_online" || javaOverridden(identifier, ctx)) return undefined;
+  if (identifier === "device_is_online") return ctx.online && String(ctx.online());
+  if (javaOverridden(identifier, ctx)) return undefined;
   const read = bundleEntry(identifier, ctx)?.read;
   for (const rank of ranksOf(read)) {
     const param = rank.findLast((p) => raw(p) !== undefined);
