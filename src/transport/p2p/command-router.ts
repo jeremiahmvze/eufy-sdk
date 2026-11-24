@@ -776,7 +776,9 @@ export class P2PCommandRouter {
           )) === true
         );
       case "p2p-station-scalar":
-        return (await this.sendStationScalar(sn, cmd.cmd, cmd.value, cmd.channel, cmd.answerMs)) === true;
+        return (
+          (await this.sendStationScalar(sn, cmd.cmd, cmd.value, cmd.channel, cmd.answerMs, cmd.stationAccount)) === true
+        );
       case "p2p-int-string":
         return (await this.sendIntString(sn, cmd.cmd, cmd.value, cmd.valueSub, cmd.channel, cmd.form)) === true;
       case "p2p-string":
@@ -1629,7 +1631,8 @@ export class P2PCommandRouter {
    * **Station-scoped scalar** (`p2p-station-scalar` intent): the 132-byte channel-less body
    * ({@link buildDirectBinaryBody} with no `channel`) on an EXPLICIT channel, sealed by the session. The
    * HomeBase's own controls ride the station broadcast channel 255 (alarm/speaker volume 1235). Settled on the
-   * device's answer ({@link sendAnswered}), awaited `answerMs` without a resend where the intent states it.
+   * device's answer ({@link sendAnswered}), awaited `answerMs` without a resend where the intent states it. `station`
+   * sends the station's member account id.
    */
   private sendStationScalar(
     sn: string,
@@ -1637,11 +1640,13 @@ export class P2PCommandRouter {
     value: number,
     channel: number,
     answerMs?: number,
+    station = false,
   ): Promise<boolean | void> {
     return this.sendAnswered(
       sn,
       outerCmd,
-      ({ session, accountId }) => session.sendBytes(buildDirectBinaryBody(value, accountId), channel, outerCmd),
+      ({ session, accountId, zmediaAccountId }) =>
+        session.sendBytes(buildDirectBinaryBody(value, station ? zmediaAccountId : accountId), channel, outerCmd),
       undefined,
       false,
       answerMs,
