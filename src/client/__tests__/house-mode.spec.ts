@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EufyMega } from "../eufy-mega.js";
 import type { EufyDevice } from "../../core/types.js";
-import type { Command } from "../../core/contracts.js";
+import { CommandResultError, StationUnreachableError, type Command } from "../../core/contracts.js";
 import { ArmingMode } from "../../model/capabilities/arming.js";
 
 /**
@@ -20,6 +20,8 @@ const OTHER_HOUSE = "T8010P0000000001";
 const SHARED = "T8010P0000000002";
 const LIGHT = "T81A0P0000000000";
 const PRO = "T9000P0000000000";
+const HUB = "T8010P0000000003";
+const BARE = "T8010P0000000004";
 
 const common = { category: "eufy_security", api: "mega", realtime: "p2p", houseId: HOUSE, memberType: 2 };
 const FLEET = [
@@ -33,6 +35,8 @@ const FLEET = [
   { ...common, sn: SHARED, stationSn: SHARED, houseId: undefined, params: { 1131: "1" } },
   { ...common, sn: LIGHT, stationSn: BASE, params: { 1131: "0" } },
   { ...common, sn: PRO, stationSn: PRO, params: { 1131: "1", 1224: "63", 1172: "99" } },
+  { ...common, sn: HUB, stationSn: HUB, params: { 1140: "1", 1224: "63" } },
+  { ...common, sn: BARE, stationSn: BARE, params: { 1131: "1", 1224: "63" } },
 ] as unknown as EufyDevice[];
 
 const PRO_AWAY = JSON.stringify({ count_down_arm: { channel_list: [], delay_time: 60 } });
@@ -127,6 +131,29 @@ describe("setHouseMode", () => {
     const shared = client([]);
     await shared.eufy.setHouseMode("shared.devices", ArmingMode.disarmed);
     expect(shared.sent.map(([sn]) => sn)).toEqual([SHARED]);
+  });
+
+  it("gates a described station on the app's device_is_online: its 1140, offline where none is listed", async () => {
+    const c = client([HUB, BARE]);
+    const online = { identifier: "device_is_online", defaultValue: " false" };
+    vi.spyOn((c.eufy as any).registry, "thingsOf").mockImplementation((sn: unknown) =>
+      sn === HUB ? { properties: { device_is_online: online } } : sn === BARE ? { properties: {} } : undefined,
+    );
+    await c.eufy.setHouseMode(HOUSE, ArmingMode.away);
+    expect(c.sent.map(([sn]) => sn)).toEqual([HUB]);
+  });
+
+  it("reports no result for a refusal with code 1 or a session that did not connect, as the app", async () => {
+    const c = client([BASE, SOLO, PRO]);
+    (c.eufy as any).routeAndReflect = async (sn: string) => {
+      throw sn === BASE
+        ? new CommandResultError(sn, 1224, 1, 6000)
+        : sn === SOLO
+          ? new StationUnreachableError(sn, 6000)
+          : new CommandResultError(sn, 1224, undefined, 6000);
+    };
+    const results = await c.eufy.setHouseMode(HOUSE, ArmingMode.away);
+    expect(results.map((r) => [r.sn, r.result])).toEqual([[PRO, "failed"]]);
   });
 
   it("sends nothing when the cloud refuses the config", async () => {

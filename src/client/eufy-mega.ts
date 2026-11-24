@@ -54,7 +54,9 @@ import { type CleanRecordPage, EMPTY_CLEAN_RECORD_PAGE, parseCleanRecords } from
 import {
   commandObservation,
   commandReflection,
+  CommandResultError,
   LiveSnapshotUnavailableError,
+  StationUnreachableError,
   type Command,
   type CommandSink,
   type Ff09SettingsReader,
@@ -2206,11 +2208,14 @@ export class EufyMega extends EventEmitter {
    * stations are then the ones its `get_home_config` names that the device list carries, else the house's own:
    * a station or a device that is its own, `eufy_security`, not held as a guest, and not a SmartDrop, lock
    * (bar the T8531 and T85V0), T8021, safe, tracker or chime. House `""` takes every listed device,
-   * `"shared.devices"` the ones in no house. Each one online (param 1131 `"1"`, or an open P2P session; an
-   * attached T81A0 reporting offline takes its station's answer) whose 1224 (unreported: home) is not already the
+   * `"shared.devices"` the ones in no house. Each one online whose 1224 (unreported: home) is not already the
    * mode is written at once and awaited 6 s: the `1350` envelope `{mode_type, user_name}` on a platform-V2
-   * device, else the direct 1224 frame. Resolves once all have answered, with each station's
-   * {@link HouseModeResult}, whatever they answered.
+   * device, else the direct 1224 frame. Online is the app's `device_is_online`, offline where the description
+   * lists none: in outdoor mode (6271 `"1"`) an open session to the device, else its station's 1140 reading on, or,
+   * off RTC, an open session to the station; an attached device also needs its 1131 on (unreported: a T8N00
+   * station). Without a description: 1131 `"1"`, or an open session; an attached T81A0 reporting offline takes its
+   * station's answer. Resolves once all have answered, with a {@link HouseModeResult} for each station except one
+   * that refused with code 1, -3 or -133 or whose session did not connect, which the app does not report either.
    *
    * @param houseId a house id, a device's {@link EufyDevice.houseId}.
    */
@@ -2227,13 +2232,25 @@ export class EufyMega extends EventEmitter {
     const house = houseId === "shared.devices" ? "" : houseId;
     const inHouse = (d: EufyDevice) => houseId === "" || (d.houseId ?? "") === house;
     const stations = named.length ? named : devices.filter((d) => inHouse(d) && armedWithHouse(d));
+    const param = (sn: string, p: number) => this.registry.paramOf(sn, p);
+    const linked = (sn: string) => !!this.p2p.getSessions().get(sn)?.isConnected;
+    const on = (v?: string) => v === "1" || v === "true" || v === "TRUE";
     const online = (d: EufyDevice): boolean => {
-      if (this.registry.paramOf(d.sn, 1131) === "1") return true;
+      const things = this.registry.thingsOf(d.sn);
+      if (things) {
+        if (!things.properties.device_is_online) return false;
+        if (param(d.sn, 6271) === "1") return linked(d.sn);
+        const st = d.stationSn || d.sn;
+        const hub = on(param(st, 1140)) || (!this.rtcRouteFor(st, "live") && linked(st));
+        const status = param(d.sn, 1131);
+        return st === d.sn ? hub : hub && (status === undefined ? st.startsWith("T8N00") : on(status));
+      }
+      if (param(d.sn, 1131) === "1") return true;
       const parent = d.sn.startsWith("T81A0") && d.stationSn !== d.sn && devices.find((p) => p.sn === d.stationSn);
-      return parent ? online(parent) : !!this.p2p.getSessions().get(d.sn)?.isConnected;
+      return parent ? online(parent) : linked(d.sn);
     };
-    return Promise.all(
-      stations.map(async (d): Promise<HouseModeResult> => {
+    const settled = await Promise.all(
+      stations.map(async (d): Promise<HouseModeResult | undefined> => {
         const { sn, name } = d;
         const raw = (p: number) => this.registry.paramOf(sn, p);
         const local = Number.parseInt(raw(1224) ?? "", 10);
@@ -2250,10 +2267,13 @@ export class EufyMega extends EventEmitter {
             ? { ...at(target), result: "answered" }
             : { ...at(wire), result: "failed" };
         } catch (error) {
+          const unrecorded = error instanceof CommandResultError && [1, -3, -133].includes(error.code ?? 0);
+          if (unrecorded || error instanceof StationUnreachableError) return undefined;
           return { ...at(wire), result: "failed", error };
         }
       }),
     );
+    return settled.filter((r) => r !== undefined);
   }
 
   /**
