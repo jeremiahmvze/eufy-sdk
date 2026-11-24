@@ -452,6 +452,28 @@ function floodlightWrite(param: number, value: string, ctx: CommandContext): Com
   return { kind: "p2p-string", cmd: 1414, value: place, channel: 0, int: value === "1" ? 1 : 0, stationAccount };
 }
 
+const isOutOfViewZone = (identifier: string, ctx: AvailabilityContext) =>
+  identifier === "detection_range_area_activityzone_config" && ["T8425", "T8426"].includes(ctx.model ?? "");
+
+/**
+ * The out-of-view zones as that screen reads the cached 6266 (a list of `{position, active, privacy}`): each
+ * position's `active` polygons as the `{index, pots}` the write takes, points back to 0–1; `[]` where it holds no list.
+ */
+function outOfViewZoneRead(own: string): string {
+  const list = decoded(own);
+  if (!Array.isArray(list)) return "[]";
+  try {
+    return JSON.stringify(
+      list.map((e: { position: unknown; active: { points: Point[] }[] }) => ({
+        index: e.position,
+        pots: e.active.map((p) => ({ points: p.points.map((q) => ({ x: q.x / 1000, y: q.y / 1000 })) })),
+      })),
+    );
+  } catch {
+    return "[]";
+  }
+}
+
 /**
  * `detection_range_area_activityzone_config` as the app's legacy out-of-view zone screen (T8425, T8426) writes it in
  * Java while the bundle sends nothing: `{index, pots}`, `index` the out-of-view position and each point 0–1 of the
@@ -459,8 +481,7 @@ function floodlightWrite(param: number, value: string, ctx: CommandContext): Com
  * left once one is deleted); `undefined` for anything else.
  */
 function outOfViewZone(identifier: string, value: string, ctx: AvailabilityContext) {
-  if (identifier !== "detection_range_area_activityzone_config" || !["T8425", "T8426"].includes(ctx.model ?? ""))
-    return undefined;
+  if (!isOutOfViewZone(identifier, ctx)) return undefined;
   const v = parse(value);
   if (!v || !Number.isInteger(v.index) || !Array.isArray(v.pots)) return undefined;
   const k = (n: unknown) => Math.trunc(1000 * Number(n) + (v.delete === true ? 0 : 0.5));
@@ -1508,6 +1529,8 @@ export function thingRead(
     const loop = objectOf(objectOf(decoded(own))?.schedules)?.loop;
     return JSON.stringify({ loop: Array.isArray(loop) ? loop : [] });
   }
+  const zones = raw(6266);
+  if (zones !== undefined && isOutOfViewZone(identifier, ctx)) return outOfViewZoneRead(zones);
   if (javaOverridden(identifier, ctx)) return undefined;
   const read = bundleEntry(identifier, ctx)?.read;
   for (const rank of ranksOf(read)) {

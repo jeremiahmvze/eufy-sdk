@@ -815,6 +815,27 @@ describe("the regenerated data's forms", () => {
     expect(cached).toEqual({ param: 6266, raw: Buffer.from('{"polygens":[],"zonecount":0}').toString("base64") });
   });
 
+  it("reads the T8425/T8426 out-of-view zones off 6266 as the app's list, each position as the write's {index, pots}", () => {
+    const id = "detection_range_area_activityzone_config";
+    const pot = { isDetectZone: true, isEditable: false, isSaved: true, points: [{ x: 100, y: 250 }] };
+    const list = [
+      { position: 1, active: [pot], privacy: [] },
+      { position: 3, active: [] },
+    ];
+    const read = (v: unknown, model = "T8425") =>
+      thingRead(id, ctx(model), (p) => (p === 6266 ? Buffer.from(JSON.stringify(v)).toString("base64") : undefined));
+    expect(read(list)).toBe(
+      JSON.stringify([
+        { index: 1, pots: [{ points: [{ x: 0.1, y: 0.25 }] }] },
+        { index: 3, pots: [] },
+      ]),
+    );
+    expect(read({ polygens: [pot], zonecount: 1 }), "the object the app caches on its own answer is no list").toBe(
+      "[]",
+    );
+    expect(read(list, "T8214")).toBeUndefined();
+  });
+
   it("writes an unpacked zone as the ZoneInfo itself, spread in the data (T8214 1700/6042)", () => {
     const pots = [
       {
