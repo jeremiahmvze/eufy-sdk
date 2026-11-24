@@ -1163,13 +1163,14 @@ test("timezone_set: written, read and reflected as the app's own code does, redi
   const berlin = "CET-1CEST,M3.5.0,M10.5.0/3|1.1375|Europe/Berlin";
   const standalone = ctx("T8410", { things: td });
   const cmd = index.buildCommand("timezone_set", "Europe/Berlin", standalone)!;
-  expect(cmd).toEqual({ kind: "p2p-string", cmd: 1215, value: berlin, channel: 3 });
+  expect(cmd).toEqual({ kind: "p2p-string", cmd: 1215, value: berlin, channel: 3, stationAccount: true });
   expect(commandReflection(cmd)).toEqual({ param: 1215, raw: "Europe/Berlin" });
   expect(index.buildCommand("timezone_set", "Europe/Berlin", ctx("T8410", { things: td, ...attached }))).toEqual({
     kind: "p2p-string",
     cmd: 1215,
     value: berlin,
     channel: 255,
+    stationAccount: true,
   });
   expect(index.buildCommand("timezone_set", "Mars/Olympus", standalone)).toMatchObject({ value: "" });
   const underCamera = { ...standalone, stationSerial: "T8214P0000000000", stationChannel: 1 };

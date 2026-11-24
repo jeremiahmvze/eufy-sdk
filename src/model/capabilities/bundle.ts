@@ -317,15 +317,15 @@ const ZONES = TIMEZONES as unknown as Readonly<Record<string, readonly [rule: st
 
 /**
  * `timezone_set` as the app's own code writes it: the id sent as `<rule>|1.<sn>|<id>` (`""` for an id not
- * in its table), through `timezone_set_redirect` where the description lists it, else in a 1215 string body,
- * on 255 under a station, else on the parent's channel.
+ * in its table), through `timezone_set_redirect` where the description lists it, else in a 1215 string body
+ * with the station's member account id, on 255 under a station, else on the parent's channel.
  */
 function timezoneWrite(id: string, ctx: CommandContext): Command | undefined {
   const zone = ZONES[id];
   const value = zone ? `${zone[0]}|1.${zone[1]}|${id}` : "";
   if (ctx.things?.properties.timezone_set_redirect) return thingWrite("timezone_set_redirect", value, ctx);
   const channel = isStationSerial(ctx.stationSerial ?? ctx.serial ?? "") ? 255 : (ctx.stationChannel ?? ctx.channel);
-  return { kind: "p2p-string", cmd: 1215, value, channel };
+  return { kind: "p2p-string", cmd: 1215, value, channel, stationAccount: true };
 }
 
 /** A reported zone as the app maps it to an id: by its `|1.` sn, else its rule or id, else its last `|` part. */
