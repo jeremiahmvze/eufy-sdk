@@ -10,7 +10,6 @@ import { asBool, isStationSerial } from "../../core/util.js";
 import { encodeVarint, RawDpWriter } from "../../core/raw-dp-writer.js";
 import { aiotDp, setJson, setPayload } from "./access.js";
 import type { AvailabilityContext, CommandContext } from "./types.js";
-import { settingsOverMqttWhenStandalone } from "../device-family.js";
 import { reflectCommand, type Command, type LiveFrames, type SessionFrame } from "../../core/contracts.js";
 import type { ThingMember } from "./thing-description.js";
 import DATA from "./bundle-wires.generated.json" with { type: "json" };
@@ -77,6 +76,8 @@ export interface BundleFrame extends SessionFrame {
   apiCommand?: number;
   /** MQTT `ff09`: the settings reply tags whose bytes follow the TLV, read off the lock first. */
   preserve?: readonly number[];
+  /** P2P 1350: the station record's member account id in place of the admin's. */
+  stationAccount?: true;
   next?: BundleFrame[];
   after?: BundleFrame;
   /** A lock setting over its station: the `ble` the app builds the 1350 params from. */
@@ -195,19 +196,56 @@ export function bundleEntry(identifier: string, ctx: AvailabilityContext) {
   const reads = Object.fromEntries(Object.entries(entry?.read ?? {}).map(([k, r]) => [k, hex ? base64Keys(r) : r]));
   const read = memberOf(reads, topology);
   const write = memberOf(entry?.write, topology);
-  const lockService = topology === "standalone" && settingsOverMqttWhenStandalone(model);
+  const esl = ESL_SETTINGS.test(model);
+  const lockService = topology === "standalone" && esl;
   const own = write
-    ? lockService
-      ? Object.fromEntries(Object.entries(frames(write)).map(([k, f]) => [k, f.cmd === 1919 ? notification(f) : f]))
+    ? esl
+      ? Object.fromEntries(
+          Object.entries(frames(write)).flatMap(([k, f]) => {
+            const sent = shown(model, f.lock?.tlv) && eslFrame(f, lockService);
+            return sent ? [[k, sent]] : [];
+          }),
+        )
       : frames(write)
     : lockService
-      ? ownStationWrite(identifier, frames(memberOf(entry?.write, "hb2")))
+      ? ownStationWrite(identifier, frames(memberOf(entry?.write, "hb2")), model)
       : undefined;
   return (entry || own) && { write: own, read, override: entry?.override };
 }
 
-/** A notification switch as the lock's own settings screen sends it when the lock is its own station: its result awaited 20 s. */
-const notification = (f: BundleFrame): BundleFrame => ({ ...f, lockService: true, timeout: 20 });
+/**
+ * The products whose settings are the app's own lock settings screens (no `rn_settings` in its device
+ * configuration) and go over the lock's own MQTT settings service when it is its own station: T8531, T85V0.
+ */
+const ESL_SETTINGS = /^T85(31|V0)/;
+
+/**
+ * Whether the lock's settings screen offers a settings TLV's paramType: rain mode (7) only where the product has
+ * that screen item, the T8531.
+ */
+const shown = (model: string, tlv = ""): boolean => !/a30107/i.test(tlv) || model.startsWith("T8531");
+
+/** A 1350 body's payload without the bundle's `transaction`, as the app's legacy sender and lock service send it. */
+const bare = (f: BundleFrame): unknown => {
+  const { transaction: _, ...payload } = f.payload as Record<string, unknown>;
+  return payload;
+};
+
+/** A write through the lock's own MQTT settings service: no ack asked, its result awaited 20 s, sent once. */
+const LOCK_SERVICE = { transport: "mqtt", mqttCmdCode: 9, needAck: false, lockService: true, timeout: 20 } as const;
+
+/**
+ * A bundle frame as the lock's own settings screens send it: a notification switch (1919) through its settings
+ * service when it is its own station; night vision (1277, 6244, 6245) and the loitering groups (2715) through the
+ * app's legacy sender, a 1350 body without `transaction` under the station's member account, the groups through the
+ * settings service as `{cmd, payload}` when it is its own station.
+ */
+function eslFrame(f: BundleFrame, standalone: boolean): BundleFrame {
+  if (standalone && f.cmd === 1919) return { ...f, lockService: true, timeout: 20 };
+  if (f.body !== "json1350" || ![1277, 2715, 6244, 6245].includes(f.subCmd ?? NaN)) return f;
+  if (standalone && f.subCmd === 2715) return { ...LOCK_SERVICE, type: "json", cmd: 2715, payload: bare(f) };
+  return { ...f, payload: bare(f), stationAccount: true };
+}
 
 /** The settings TLV after `A1`/`A2` of a scalar a lock's own settings screen writes, per value, bundled or not. */
 const OWN_STATION_TLV: Readonly<Record<string, Readonly<Record<string, string>>>> = {
@@ -223,15 +261,18 @@ const OWN_STATION_TLV: Readonly<Record<string, Readonly<Record<string, string>>>
  * write re-sends the do-not-disturb flag, start and end the lock reports; a log switch (paramType 6) carries no
  * field; a paramType the screens never send (13, 14), nothing.
  */
-function ownStationWrite(identifier: string, hb: Record<string, BundleFrame>): Record<string, BundleFrame> | undefined {
-  const sent = { transport: "mqtt", mqttCmdCode: 9, needAck: false, lockService: true, timeout: 20 };
+function ownStationWrite(
+  identifier: string,
+  hb: Record<string, BundleFrame>,
+  model: string,
+): Record<string, BundleFrame> | undefined {
   const tlvFrame = (tlv: string): BundleFrame | undefined => {
     const type = /^a301(..)/i.exec(tlv)?.[1]?.toLowerCase();
-    if (type === "0d" || type === "0e") return undefined;
+    if (type === "0d" || type === "0e" || !shown(model, tlv)) return undefined;
     const payload = type === "06" ? "" : tlv;
     const preserve = type === "04" ? [0xbd, 0xbe, 0xbf] : undefined;
     return {
-      ...sent,
+      ...LOCK_SERVICE,
       type: "ble",
       cmdCode: 52,
       apiCommand: 6015,
@@ -246,8 +287,7 @@ function ownStationWrite(identifier: string, hb: Record<string, BundleFrame>): R
     if (f.lock)
       return f.lock.version === 2 ? tlvFrame(f.lock.tlv.replace(/^a104\{nowS:u32le\}a228\{userId\}/i, "")) : undefined;
     if (f.body !== "json1350" || !f.payload || typeof f.payload !== "object") return undefined;
-    const { transaction: _, ...payload } = f.payload as Record<string, unknown>;
-    return { ...sent, type: "json", cmd: f.subCmd, payload };
+    return { ...LOCK_SERVICE, type: "json", cmd: f.subCmd, payload: bare(f) };
   };
   const table = OWN_STATION_TLV[identifier];
   const out = Object.entries(table ?? hb).flatMap(([k, f]) => {
@@ -784,8 +824,8 @@ function nativeCommand(
 
 /**
  * The session command a `p2p` frame is, its tokens filled by `fill`, with the device's admin account id as esiotkit's
- * sender quotes it (never `stationAccount`). Refused where the SDK cannot send it as
- * the app does: a session other than the device's own (the default the client selects), a 1350 raw-params
+ * sender quotes it, the station's member one on a frame stating `stationAccount`. Refused where the SDK cannot send
+ * it as the app does: a session other than the device's own (the default the client selects), a 1350 raw-params
  * frame (`params.cmd` 1003), or a 1700 live-start (`extValue` > 0).
  */
 function sessionCommand(
@@ -832,6 +872,7 @@ function sessionCommand(
     }
     return {
       ...command,
+      ...(frame.stationAccount && { stationAccount: true as const }),
       ...(frame.unzipParams && object && { unzip: true as const }),
       ...(counter && { counter }),
     } as Command;
