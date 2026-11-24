@@ -403,7 +403,17 @@ const _lockArgs: Exact<Parameters<NonNullable<typeof lk.lock>>, []> = true;
 // setAutoLock dispatches to the sink, not the ff09 reader, and is absent on the T8530 and on the classic
 // Wi-Fi lock, which never takes the ff09 settings frame — family-gated, it lands optional.
 const _autoLockRequired: Exact<undefined extends typeof lk.setAutoLock ? true : false, true> = true;
-const _autoLockArgs: Exact<Parameters<NonNullable<typeof lk.setAutoLock>>, [boolean, (number | undefined)?]> = true;
+const _autoLockArgs: Exact<
+  Parameters<NonNullable<typeof lk.setAutoLock>>,
+  [
+    boolean,
+    (number | undefined)?,
+    Pick<
+      import("../../../core/contracts.js").AutoLockSnapshot,
+      "isSchedule" | "scheduleStartTime" | "scheduleEndTime"
+    >?,
+  ]
+> = true;
 const _snapshot: Exact<
   ReturnType<NonNullable<typeof lk.getAutoLockState>>,
   Promise<import("../../../core/contracts.js").AutoLockSnapshot>
@@ -454,11 +464,29 @@ describe("lock capability — a lock that is its own station", () => {
       [0xa3, "00"],
       [0xa4, "01"],
     ]);
-    expect(sent[1]).toMatchObject({ preserve: [0xa3, 0xa4, 0xa5, 0xb4] });
+    expect(sent[1]).toMatchObject({ preserve: [Buffer.from("3c00", "hex"), 0xa3, 0xa4, 0xa5, 0xb4] });
     expect(fields(sent[1])).toEqual([
       [0xa3, "00"],
       [0xa4, "00"],
-      [0xa5, "3c00"],
     ]);
+  });
+
+  it("writes the schedule flag, start and end [hour, minute] in the same frame, the delay and door-state check read", async () => {
+    const { acts, sent } = lockOf(own);
+    const at = (start: [number, number]) => ({
+      isSchedule: true,
+      scheduleStartTime: start,
+      scheduleEndTime: [6, 30] as [number, number],
+    });
+    await acts.setAutoLock!(true, undefined, at([23, 0]));
+    expect(sent[0]).toMatchObject({
+      cmdCode: 52,
+      apiCommand: 6015,
+      preserve: [0xa2, Buffer.from([1]), Buffer.from([23, 0]), Buffer.from([6, 30]), 0xb4],
+    });
+    await expect(acts.setAutoLock!(true, 30, at([24, 0]))).rejects.toThrow();
+    const { acts: hb } = lockOf({ ...own, homeBaseAttached: true, stationSerial: "T8030P0000000000" });
+    await expect(hb.setAutoLock!(true, 30, at([23, 0]))).rejects.toThrow();
+    expect(sent).toHaveLength(1);
   });
 });

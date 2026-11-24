@@ -118,7 +118,7 @@ function serviceWrite(
   cmdCode: number,
   apiCommand: number,
   fields: { tag: number; value: Buffer }[],
-  preserve?: number[],
+  preserve?: (number | Buffer)[],
 ): Command {
   return {
     kind: "mqtt-dp",
@@ -251,33 +251,47 @@ export const LOCK_MEMBERS = {
    * Read-modify-write the auto-lock setting: the transport GETs the device's current settings, changes
    * only `enabled` (+ `delaySeconds` if given — otherwise the current delay is preserved), and writes the
    * rest back verbatim. Works on both the T8531 video lock and the T85D0 garage/lock, which share the
-   * identical settings frame.
+   * identical settings frame. `schedule`, as `getAutoLockState` reads it, is written only on a lock that is its own
+   * station, in the same frame, as its auto-lock screen sends it.
    *
    * **Unlike `lock`/`unlock` this can reject on a device TIMEOUT**, not just missing identity — the GET
    * step is a genuine precondition, so this one is not fire-and-forget.
    */
   setAutoLock: method(
     ({ ctx, sink }) =>
-      (enabled: boolean, delaySeconds?: number): Promise<void> => {
+      (
+        enabled: boolean,
+        delaySeconds?: number,
+        schedule?: Pick<AutoLockSnapshot, "isSchedule" | "scheduleStartTime" | "scheduleEndTime">,
+      ): Promise<void> => {
         if (!ctx.adminUserId) {
           return Promise.reject(
             new Error(`lock.setAutoLock: missing member identity (admin_user_id) [${describeDevice(ctx)}]`),
           );
         }
-        // Its settings frame (paramType 0): enable, delay, then the schedule flag, start and end and the door-state check
-        // the lock reports, the delay too where none is given.
+        const times = schedule ? [schedule.scheduleStartTime, schedule.scheduleEndTime] : [];
+        if (
+          times.some(([h, m]) => !(Number.isInteger(h) && Number.isInteger(m) && h >= 0 && h < 24 && m >= 0 && m < 60))
+        )
+          return Promise.reject(new Error(`lock.setAutoLock: schedule times must be [hour 0-23, minute 0-59]`));
+        // Its settings frame (paramType 0): enable, delay, the schedule flag, start and end ([hour, minute]) and the
+        // door-state check, each the lock's own read where not given.
         if (ownStation(ctx)) {
-          const delay = delaySeconds === undefined ? [] : [tlv(0xa5, u16le(delaySeconds))];
-          const keep = [...(delay.length ? [] : [0xa2]), 0xa3, 0xa4, 0xa5, 0xb4];
+          const delay = delaySeconds === undefined ? 0xa2 : u16le(delaySeconds);
+          const window = schedule
+            ? [Buffer.from([schedule.isSchedule ? 1 : 0]), ...times.map((t) => Buffer.from(t))]
+            : [0xa3, 0xa4, 0xa5];
           return sink.dispatch(
             serviceWrite(
               52,
               6015,
-              [tlv(0xa3, Buffer.from([0])), tlv(0xa4, Buffer.from([enabled ? 1 : 0])), ...delay],
-              keep,
+              [tlv(0xa3, Buffer.from([0])), tlv(0xa4, Buffer.from([enabled ? 1 : 0]))],
+              [delay, ...window, 0xb4],
             ),
           );
         }
+        if (schedule)
+          return Promise.reject(new Error(`lock.setAutoLock: no schedule write on this lock [${describeDevice(ctx)}]`));
         return sink.dispatch({
           kind: "ff09-autolock",
           adminUserId: ctx.adminUserId,

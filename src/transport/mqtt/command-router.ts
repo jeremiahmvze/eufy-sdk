@@ -798,8 +798,9 @@ export class MqttCommandRouter {
       fields = [
         ...fields,
         ...cmd.preserve.map((t, i) => {
-          const value = reply.fields.get(t);
-          if (!value) throw new Error(`mqtt-dp for ${dev.sn}: the lock reports no settings field 0x${t.toString(16)}`);
+          const value = typeof t === "number" ? reply.fields.get(t) : t;
+          if (!value)
+            throw new Error(`mqtt-dp for ${dev.sn}: the lock reports no settings field 0x${Number(t).toString(16)}`);
           return { tag: next + i, value };
         }),
       ];

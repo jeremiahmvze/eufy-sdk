@@ -244,6 +244,19 @@ describe("a lock service write", () => {
     ]);
   });
 
+  it("sends a given value where a re-sent field would go", async () => {
+    const { router, mqtt } = lockRouter();
+    answering(mqtt as any, lock(0));
+    await router.dispatchCommand(SN, { ...volume, preserve: [Buffer.from([9]), 0xbf] });
+    const p = decode((mqtt.publish.mock.calls[1] as unknown as [string, string])[1]).trans.payload;
+    const plain = decryptFf09Frame({ lockPayload: p.lock_payload, keyTime: p.time, adminUserId: ADMIN, deviceSn: SN });
+    const tlv = [...walkFf09Tlv(plain, 0, plain.length)].filter(([tag]) => tag > 0xa4);
+    expect(tlv.map(([tag, v]) => [tag, v.toString("hex")])).toEqual([
+      [0xa5, "09"],
+      [0xa6, "071e"],
+    ]);
+  });
+
   it("is not done on a non-zero result, nor on an answer to another request's time, and is not sent again", async () => {
     const { router, mqtt } = lockRouter();
     const write = { ...volume, preserve: undefined };
