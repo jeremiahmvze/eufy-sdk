@@ -403,7 +403,8 @@ export class MegaHttpClient {
   tuya?: TuyaCommandRouter;
   /** `product_domains.eufy_home` of the last `estimate_domain` reply, the app's Home category host. */
   private homeDomain?: string;
-  private bootstrapDomain?: string;
+  /** `domain` of the last `estimate_domain` reply, the app's Basic host (`mega-…`, or one host for everything). */
+  private megaDomain?: string;
   private sessionKey?: SessionEntry;
   /** Per-host ECDH session keys for non-mega gateways (e.g. eufylife) keyed by host. */
   private readonly sessionKeys = new Map<string, SessionEntry>();
@@ -511,6 +512,7 @@ export class MegaHttpClient {
     this.region = saved.region;
     this.securityDomain = saved.securityDomain;
     this.homeDomain = saved.homeDomain;
+    this.megaDomain = saved.megaDomain;
     this.auth_ = {
       userId: saved.userId,
       accountUserId: saved.accountUserId,
@@ -655,7 +657,7 @@ export class MegaHttpClient {
     const blob = JSON.stringify(d);
     if (blob.includes("-eu-") || domain.includes("-eu-")) this.region = "eu-pr";
     else if (blob.includes("-us-") || domain.includes("-us-")) this.region = "us-pr";
-    if (domain && !domain.startsWith("mega-")) this.bootstrapDomain = domain;
+    if (domain) this.megaDomain = domain;
     this.logger.debug("[mega] region:", this.region, "domain:", domain);
   }
 
@@ -677,7 +679,9 @@ export class MegaHttpClient {
       const cached = this.sessionKeys.get(targetHost!);
       if (cached && Date.now() - cached.createdAt < 12 * 3600_000) return cached;
     }
-    const host = isEufylife ? targetHost! : (this.bootstrapDomain ?? `app-openapi-${this.region}.eufy.com`);
+    // A `mega-` domain fans out per module (`app-openapi-…` here); any other domain is the one host for all.
+    const single = this.megaDomain && !this.megaDomain.startsWith("mega-") ? this.megaDomain : undefined;
+    const host = isEufylife ? targetHost! : (single ?? `app-openapi-${this.region}.eufy.com`);
     // Joined, not duplicated: every call that finds the key gone at once waits on the one exchange. The token is
     // part of the key because an exchange started before a login is bound to no user, and login re-exchanges
     // precisely to get one that is.
@@ -1347,13 +1351,13 @@ export class MegaHttpClient {
   /**
    * The per-user secure-MQTT certificate, as the app asks for it per stack: `eufy_security` is
    * `POST app/mqtt/register/iot` and `eufy_life` is `POST app/devicemanage/get_user_mqtt_info`, both on the
-   * Basic (`mega-`) host with `app-tab: <scope>`; without a scope, the clean line's headerless
+   * Basic host (`estimate_domain`'s `domain`, persisted) with `app-tab: <scope>`; without a scope, the clean line's headerless
    * `get_user_mqtt_info`.
    */
   getUserMqttInfo(scope?: "eufy_security" | "eufy_life"): Promise<SecureMqttCredentials> {
     if (!scope) return this.post<SecureMqttCredentials>("devicemanage", "/app/devicemanage/get_user_mqtt_info", {});
     const path = scope === "eufy_security" ? "/app/mqtt/register/iot" : "/app/devicemanage/get_user_mqtt_info";
-    const basic = this.bootstrapDomain ?? `mega-${this.region}.eufy.com`;
+    const basic = this.megaDomain ?? `mega-${this.region}.eufy.com`;
     return this.postSigned<SecureMqttCredentials>(basic, path, {}, true, {}, { "app-tab": scope });
   }
 
@@ -1981,6 +1985,7 @@ export class MegaHttpClient {
       countryCode: this.cfg.countryCode,
       securityDomain: this.securityDomain,
       homeDomain: this.homeDomain,
+      megaDomain: this.megaDomain,
       openudid: this.openudid,
       phoneModel: this.phoneModel,
       mediaUserAgent: this.mediaUserAgent,
