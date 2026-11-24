@@ -44,7 +44,6 @@ import { CommandType } from "./commands.js";
 import {
   buildFf09Frame,
   buildFf09QueryFrame,
-  buildFf09SettingToggleFrame,
   buildFf09AutolockSetFrame,
   buildFf09TlvFrame,
   decryptFf09Frame,
@@ -801,9 +800,6 @@ export class P2PCommandRouter {
         return false;
       case "ff09-autolock":
         await this.sendFf09Autolock(sn, cmd);
-        return false;
-      case "ff09-setting-toggle":
-        await this.sendFf09SettingToggle(sn, cmd);
         return false;
       case "aiot-dp":
         throw new Error(`aiot-dp command (DP ${cmd.dp}) not routable over P2P: AIoT MQTT devices use the MQTT router`);
@@ -2211,35 +2207,6 @@ export class P2PCommandRouter {
           deviceSn: cmd.deviceSn,
         }),
       ),
-    );
-  }
-
-  /**
-   * **`ff09-setting-toggle` intent** — the COMPACT single-setting `SET_SETTINGS` write (currently:
-   * T8531 Rain Mode, `settingId` = `ff09.ts`'s `FF09_SETTING_ID.RAIN_MODE`). Unlike
-   * {@link sendFf09Autolock}, this is a pure blind write — no GET pass, no reply wait — since the
-   * compact frame ({@link buildFf09SettingToggleFrame}) only carries the one field being changed, same
-   * fire-and-forget shape as {@link sendFf09Actuate}. See `transport/ff09.ts`'s "Rain Mode" doc section. The routing channel is re-resolved from
-   * the device record — the capability never supplies it.
-   */
-  private async sendFf09SettingToggle(
-    sn: string,
-    cmd: { adminUserId: string; deviceSn: string; settingId: number; value: boolean },
-  ): Promise<void> {
-    const resolved = await this.resolveSession(sn);
-    const frame = buildFf09SettingToggleFrame({
-      adminUserId: cmd.adminUserId,
-      deviceSn: cmd.deviceSn,
-      settingId: cmd.settingId,
-      value: cmd.value,
-    });
-    await this.sendSetPayloadEnvelope(
-      sn,
-      CMD_TRANSFER_PAYLOAD,
-      ff09TransferPayload(frame),
-      resolved.channel,
-      0,
-      resolved,
     );
   }
 

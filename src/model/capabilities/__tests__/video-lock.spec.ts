@@ -70,7 +70,6 @@ describe("native video lock", () => {
     const { acts } = bind<LockActions>("lock", ctx, { ff09Settings: { getAutoLockState: vi.fn() } });
     expect(acts.setAutoLock).toBeUndefined();
     expect(acts.getAutoLockState).toBeUndefined();
-    expect(acts.setRainMode).toBeUndefined();
     const other = bind<LockActions>("lock", { ...ctx, deviceType: 189 }).acts;
     expect(other.setAutoLock).toBeTypeOf("function");
     expect(other.refreshStatus).toBeUndefined();

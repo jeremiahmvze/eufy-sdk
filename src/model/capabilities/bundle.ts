@@ -10,6 +10,7 @@ import { asBool, isStationSerial } from "../../core/util.js";
 import { encodeVarint, RawDpWriter } from "../../core/raw-dp-writer.js";
 import { aiotDp, setJson, setJsonRaw, setPayload, setScalar, setStationScalar } from "./access.js";
 import type { AvailabilityContext, CommandContext } from "./types.js";
+import { settingsOverMqttWhenStandalone } from "../device-family.js";
 import { reflectCommand, type Command, type LiveFrames, type SessionFrame } from "../../core/contracts.js";
 import type { ThingMember } from "./thing-description.js";
 import DATA from "./bundle-wires.generated.json" with { type: "json" };
@@ -70,6 +71,12 @@ export interface BundleFrame extends SessionFrame {
   timeout?: number | string;
   retryCount?: number;
   needAck?: boolean;
+  /** MQTT: sent as the lock's own settings service does (no ack asked, its result code awaited, sent once). */
+  lockService?: boolean;
+  /** MQTT `ff09`: the payload's `apiCommand` where it is not 1940. */
+  apiCommand?: number;
+  /** MQTT `ff09`: the settings reply tags whose bytes follow the TLV, read off the lock first. */
+  preserve?: readonly number[];
   next?: BundleFrame[];
   after?: BundleFrame;
   /** A lock setting over its station: the `ble` the app builds the 1350 params from. */
@@ -188,7 +195,66 @@ export function bundleEntry(identifier: string, ctx: AvailabilityContext) {
   const reads = Object.fromEntries(Object.entries(entry?.read ?? {}).map(([k, r]) => [k, hex ? base64Keys(r) : r]));
   const read = memberOf(reads, topology);
   const write = memberOf(entry?.write, topology);
-  return entry && { write: write && frames(write), read, override: entry.override };
+  const lockService = topology === "standalone" && settingsOverMqttWhenStandalone(model);
+  const own = write
+    ? lockService
+      ? Object.fromEntries(Object.entries(frames(write)).map(([k, f]) => [k, f.cmd === 1919 ? notification(f) : f]))
+      : frames(write)
+    : lockService
+      ? ownStationWrite(identifier, frames(memberOf(entry?.write, "hb2")))
+      : undefined;
+  return (entry || own) && { write: own, read, override: entry?.override };
+}
+
+/** A notification switch as the lock's own settings screen sends it when the lock is its own station: its result awaited 20 s. */
+const notification = (f: BundleFrame): BundleFrame => ({ ...f, lockService: true, timeout: 20 });
+
+/** The settings TLV after `A1`/`A2` of a scalar a lock's own settings screen writes, per value, bundled or not. */
+const OWN_STATION_TLV: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  smart_lock_rain_mode_switch: { "*": "a30107a401{value:u8}" },
+  smart_lock_lock_sound_volume: { "*": "a30104a401{value:u8}" },
+  smart_lock_lock_sound_switch: { true: "a30104a40102", false: "a30104a40100" },
+};
+
+/**
+ * What a lock that is its own station sends where the bundles write only through a station, as its own settings
+ * screen does over secure MQTT (`head.cmd` 9, no ack asked, the lock's result code awaited 20 s, sent once): a
+ * settings TLV in its `ff09` frame under apiCommand 6015, a station JSON body as its `cmd` and payload. A volume
+ * write re-sends the do-not-disturb flag, start and end the lock reports; a log switch (paramType 6) carries no
+ * field; a paramType the screens never send (13, 14), nothing.
+ */
+function ownStationWrite(identifier: string, hb: Record<string, BundleFrame>): Record<string, BundleFrame> | undefined {
+  const sent = { transport: "mqtt", mqttCmdCode: 9, needAck: false, lockService: true, timeout: 20 };
+  const tlvFrame = (tlv: string): BundleFrame | undefined => {
+    const type = /^a301(..)/i.exec(tlv)?.[1]?.toLowerCase();
+    if (type === "0d" || type === "0e") return undefined;
+    const payload = type === "06" ? "" : tlv;
+    const preserve = type === "04" ? [0xbd, 0xbe, 0xbf] : undefined;
+    return {
+      ...sent,
+      type: "ble",
+      cmdCode: 52,
+      apiCommand: 6015,
+      subVersion: 3,
+      functionType: 2,
+      needEncrypt: true,
+      payload,
+      ...(preserve && { preserve }),
+    };
+  };
+  const frameOf = (f: BundleFrame): BundleFrame | undefined => {
+    if (f.lock)
+      return f.lock.version === 2 ? tlvFrame(f.lock.tlv.replace(/^a104\{nowS:u32le\}a228\{userId\}/i, "")) : undefined;
+    if (f.body !== "json1350" || !f.payload || typeof f.payload !== "object") return undefined;
+    const { transaction: _, ...payload } = f.payload as Record<string, unknown>;
+    return { ...sent, type: "json", cmd: f.subCmd, payload };
+  };
+  const table = OWN_STATION_TLV[identifier];
+  const out = Object.entries(table ?? hb).flatMap(([k, f]) => {
+    const frame = typeof f === "string" ? tlvFrame(f) : frameOf(f);
+    return frame ? [[k, frame] as const] : [];
+  });
+  return out.length ? Object.fromEntries(out) : undefined;
 }
 
 /**
@@ -591,6 +657,7 @@ function mqttJsonCommand(frame: BundleFrame, fill: (x: unknown) => unknown): Com
     cmd: frame.cmd,
     payload,
     ...(typeof frame.needAck === "boolean" && { needAck: frame.needAck }),
+    ...(frame.lockService && { lockService: true }),
     ...(typeof frame.timeout === "number" && { timeoutS: frame.timeout }),
     ...(typeof frame.retryCount === "number" && { retryCount: frame.retryCount }),
   };
@@ -637,6 +704,9 @@ function mqttCommand(frame: BundleFrame, value: unknown, fill: (x: unknown) => u
     ...(frame.subVersion !== undefined && { subVersion: frame.subVersion }),
     ...(frame.functionType !== undefined && { functionType: frame.functionType }),
     encrypt: frame.needEncrypt !== false,
+    ...(frame.lockService && { lockService: true }),
+    ...(frame.apiCommand !== undefined && { apiCommand: frame.apiCommand }),
+    ...(frame.preserve && { preserve: frame.preserve }),
     ...(typeof frame.timeout === "number" && { timeoutS: frame.timeout }),
     ...(typeof frame.retryCount === "number" && { retryCount: frame.retryCount }),
   };

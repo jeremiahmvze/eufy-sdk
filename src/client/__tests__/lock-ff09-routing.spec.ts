@@ -14,7 +14,7 @@ const ADMIN = "0000000000000000000000000000000000000000";
 afterEach(() => vi.restoreAllMocks());
 
 describe("video lock ff09 routing", () => {
-  it("sends a standalone video lock's lock frames and auto-lock read over secure MQTT, an attached one's over P2P", async () => {
+  it("sends a standalone T8531 or T85V0 lock frames and auto-lock read over secure MQTT, an attached one over P2P", async () => {
     const client = new EufyMega({
       email: "test@example.com",
       password: "synthetic",
@@ -39,7 +39,7 @@ describe("video lock ff09 routing", () => {
     internals.registry.devices = [
       { sn: STANDALONE, model: "T85V0", api: "mega", p2pDid: "XXXXXXX-000000-XXXXX", raw: raw(STANDALONE) },
       { sn: ATTACHED, model: "T85V0", api: "mega", p2pDid: "XXXXXXX-000001-XXXXX", raw: raw(HUB) },
-      { sn: S330, model: "T8531", api: "mega", p2pDid: "XXXXXXX-000002-XXXXX", raw: raw(S330, DeviceType.LOCK_8530) },
+      { sn: S330, model: "T8531", api: "mega", p2pDid: "XXXXXXX-000002-XXXXX", raw: raw(S330, DeviceType.LOCK_8531) },
     ] as EufyDevice[];
     const mqtt = vi.spyOn(internals.mqtt, "dispatchCommand").mockResolvedValue();
     const p2p = vi.spyOn(internals.p2p, "dispatchCommand").mockResolvedValue();

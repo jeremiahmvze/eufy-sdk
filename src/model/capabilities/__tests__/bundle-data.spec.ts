@@ -2,6 +2,7 @@ import { frameCommand, thingRead, thingWrite, type BundleFrame } from "../bundle
 import { byteCodec } from "./proto-bytes.js";
 import type { ThingDescription, ThingProperty } from "../thing-description.js";
 import type { CommandContext } from "../types.js";
+import type { Command } from "../../../core/contracts.js";
 import DATA from "../bundle-wires.generated.json" with { type: "json" };
 
 /** The identifiers a member writes from the shipped data, `bool` where the member is a switch. */
@@ -229,6 +230,81 @@ describe("smart_lock_rain_mode_switch on a T8531 behind a HomeBase", () => {
       [0xa3, "07"],
       [0xa4, "01"],
     ]);
+  });
+});
+
+/** A lock that is its own station, as its own settings screen sends there: over secure MQTT, its result awaited. */
+describe("a standalone T8531 / T85V0 lock setting", () => {
+  const standalone = (identifier: string, model: string, type: string) =>
+    contextOf({ identifier, type, model, variant: "", topology: "standalone" });
+  const tlv = (c: Command | undefined) =>
+    (c as Extract<Command, { kind: "mqtt-dp" }>).fields.map((f) => [f.tag, f.value.toString("hex")]);
+  const sent = { kind: "mqtt-dp", mqttCmdCode: 9, cmdCode: 52, apiCommand: 6015, lockService: true };
+
+  it("is the settings TLV in the lock's ff09 frame, a volume re-sending the do-not-disturb fields", () => {
+    const rain = thingWrite(
+      "smart_lock_rain_mode_switch",
+      "1",
+      standalone("smart_lock_rain_mode_switch", "T8531", "bool"),
+    );
+    expect(rain).toMatchObject({ ...sent, subVersion: 3, functionType: 2, encrypt: true, timeoutS: 20 });
+    expect(tlv(rain)).toEqual([
+      [0xa3, "07"],
+      [0xa4, "01"],
+    ]);
+    const volume = thingWrite(
+      "smart_lock_lock_sound_volume",
+      "3",
+      standalone("smart_lock_lock_sound_volume", "T8531", "string"),
+    );
+    expect(volume).toMatchObject({ ...sent, preserve: [0xbd, 0xbe, 0xbf] });
+    expect(tlv(volume)).toEqual([
+      [0xa3, "04"],
+      [0xa4, "03"],
+    ]);
+    const off = thingWrite(
+      "smart_lock_lock_sound_switch",
+      "false",
+      standalone("smart_lock_lock_sound_switch", "T85V0", "string"),
+    );
+    expect(tlv(off)).toEqual([
+      [0xa3, "04"],
+      [0xa4, "00"],
+    ]);
+    const params = standalone("smart_lock_set_setting_params", "T85V0", "text");
+    const write = (paramType: number, param = {}) =>
+      thingWrite("smart_lock_set_setting_params", JSON.stringify({ paramType, param }), params);
+    expect(tlv(write(8, { isPassageMode: 1, passageModeStartTime: "19:00", passageModeEndTime: "07:30" }))).toEqual([
+      [0xa3, "08"],
+      [0xa4, "01"],
+      [0xa5, "1300"],
+      [0xa6, "071e"],
+    ]);
+    expect(tlv(write(6, { isEnableLog: 1 }))).toEqual([]);
+    expect(write(13, { faceEnabled: 1, faceWakeType: 0, fingerprintEnabled: 1 })).toBeUndefined();
+  });
+
+  it("is a station JSON body as its cmd and payload", () => {
+    const ctx = standalone("device_rain_mode", "T85V0", "bool");
+    expect(thingWrite("device_rain_mode", "1", ctx)).toEqual({
+      kind: "mqtt-json",
+      mqttCmdCode: 9,
+      cmd: 2732,
+      payload: { pvm_rainny_switch: 1 },
+      needAck: false,
+      lockService: true,
+      timeoutS: 20,
+    });
+  });
+
+  it("awaits the lock's result for a notification switch, as its own settings screen", () => {
+    const ctx = standalone("smart_lock_notification_locked_switch", "T85V0", "bool");
+    expect(thingWrite("smart_lock_notification_locked_switch", "1", ctx)).toMatchObject({
+      kind: "mqtt-json",
+      cmd: 1919,
+      lockService: true,
+      timeoutS: 20,
+    });
   });
 });
 

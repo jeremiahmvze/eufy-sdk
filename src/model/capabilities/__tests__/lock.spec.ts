@@ -1,4 +1,4 @@
-import { LOCK, LOCK_SETTING_ID, type LockActions } from "../lock.js";
+import { LOCK, type LockActions } from "../lock.js";
 import { isBluetoothLock, isClassicWifiLock } from "../../device-family.js";
 import { parseThingsList } from "../thing-description.js";
 import { resolveDevice } from "../../registry.js";
@@ -123,7 +123,6 @@ describe("lock capability — classic Wi-Fi lock family", () => {
     const { acts } = lockOf(classicCtx);
     expect(acts.setAutoLock).toBeUndefined();
     expect("setAutoLock" in acts).toBe(false);
-    expect(acts.setRainMode).toBeUndefined();
     expect(lockOf(p2pCtx).acts.setAutoLock).toBeTypeOf("function");
   });
 
@@ -187,59 +186,6 @@ describe("lock capability module", () => {
       deviceSn: mqttCtx.serial,
     });
     expect(sent[1]).toEqual({ ...sent[0], engage: true }); // lock (engage)
-  });
-
-  it("setRainMode on a P2P lock dispatches a transport-neutral ff09-setting-toggle intent", async () => {
-    const { acts, sent } = lockOf(p2pCtx);
-    await acts.setRainMode?.(true);
-    expect(sent).toEqual([
-      {
-        kind: "ff09-setting-toggle",
-        adminUserId: p2pCtx.adminUserId,
-        deviceSn: p2pCtx.serial,
-        settingId: LOCK_SETTING_ID.RAIN_MODE,
-        value: true,
-      },
-    ]);
-  });
-
-  it("setRainMode is absent on a LOCK_85V0, which the app offers no Rain Mode", () => {
-    const { acts } = lockOf({ ...p2pCtx, deviceType: DeviceType.LOCK_85V0 });
-    expect("setRainMode" in acts).toBe(false);
-  });
-
-  it("setRainMode is absent on an MQTT-only device (no known Rain Mode on the garage door)", () => {
-    const { acts } = lockOf(mqttCtx);
-    expect(acts.setRainMode).toBeUndefined();
-    expect("setRainMode" in acts).toBe(false);
-  });
-
-  it.each([
-    "setOneTouchLock",
-    "setScramblePasscode",
-    "setWifiStatus",
-    "setLogEnabled",
-    "setPrivacyMode",
-    "setOneTouchRearLock",
-  ] as const)(
-    "%s is ABSENT until captured — source-confirmed-but-uncaptured toggles are not installed as keys, on either transport",
-    (method) => {
-      for (const ctx of [p2pCtx, mqttCtx]) {
-        const acts = lockOf(ctx).acts as Record<string, unknown>;
-        expect(acts[method]).toBeUndefined();
-        expect(method in acts).toBe(false);
-      }
-    },
-  );
-
-  it("all 7 setting-id constants are distinct (no accidental collision)", () => {
-    const ids = Object.values(LOCK_SETTING_ID);
-    expect(new Set(ids).size).toBe(ids.length);
-  });
-
-  it("setRainMode rejects on missing member identity", async () => {
-    const { acts } = lockOf({ ...p2pCtx, adminUserId: undefined });
-    await expect(acts.setRainMode?.(true)).rejects.toThrow(/member identity/);
   });
 
   it("lock/unlock reject on missing member identity, on either transport", async () => {
@@ -416,7 +362,6 @@ describe("lock capability — SmartDrop lid", () => {
     ]);
     expect(lid.lock).toBeUndefined();
     expect(lid.setAutoLock).toBeUndefined();
-    expect(lid.setRainMode).toBeUndefined();
     const ff09 = { getAutoLockState: vi.fn() } as unknown as Ff09SettingsReader;
     expect("getAutoLockState" in lockOf(ctx, ff09).acts).toBe(false);
   });
@@ -454,18 +399,9 @@ const _noSetLocked: Exact<"setLocked" extends keyof LockActions ? true : false, 
 const _lockRequired: Exact<undefined extends typeof lk.lock ? true : false, true> = true;
 const _lockArgs: Exact<Parameters<NonNullable<typeof lk.lock>>, []> = true;
 
-// Topology-gated: rain mode exists on the P2P video lock, not on the MQTT garage door.
-const _rainOptional: Exact<undefined extends typeof lk.setRainMode ? true : false, true> = true;
-
-// UNVERIFIED writes are declared, not installed → optional, and the compiler says so.
-const _oneTouchOptional: Exact<undefined extends typeof lk.setOneTouchLock ? true : false, true> = true;
-const _scrambleOptional: Exact<undefined extends typeof lk.setScramblePasscode ? true : false, true> = true;
-// …and being write-only, they have no getter even so.
-const _noOneTouchGetter: Exact<"oneTouchLock" extends keyof LockActions ? true : false, false> = true;
-
 // A provider-backed member is optional (absent unbound) and keeps the provider's own signature.
 // setAutoLock dispatches to the sink, not the ff09 reader, and is absent on the T8530 and on the classic
-// Wi-Fi lock, which never takes the ff09 settings frame — family-gated, it lands optional like setRainMode.
+// Wi-Fi lock, which never takes the ff09 settings frame — family-gated, it lands optional.
 const _autoLockRequired: Exact<undefined extends typeof lk.setAutoLock ? true : false, true> = true;
 const _autoLockArgs: Exact<Parameters<NonNullable<typeof lk.setAutoLock>>, [boolean, (number | undefined)?]> = true;
 const _snapshot: Exact<
@@ -479,10 +415,6 @@ export const _surfaceAssertions = [
   _noSetLocked,
   _lockRequired,
   _lockArgs,
-  _rainOptional,
-  _oneTouchOptional,
-  _scrambleOptional,
-  _noOneTouchGetter,
   _autoLockRequired,
   _autoLockArgs,
   _snapshot,
