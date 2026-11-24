@@ -15,11 +15,11 @@ dev.camera?.()?.on(); // → fluent typed action (see Fluent actions below)
 Read and control a device through its **fluent capability accessors** — `dev.<cap>()?.…` — for both
 reads (typed getters) and writes (action methods). That's the whole surface a host needs.
 
-Reads are cheap and never wake the device: they return in-memory state kept fresh by realtime, with a
-read-through cache refreshing stale values in the background — so polling a `Device` is safe. Reuse the
+Reads are cheap and never wake the device: they return in-memory state kept fresh by realtime and the
+poll — so polling a `Device` is safe. Reuse the
 object from `getDevice(sn)` rather than re-fetching each read: it stays current, and its capability set
 widens in place if the device later reports evidence for more. See
-[Connectivity & battery → Read-through cache](/connectivity).
+[Connectivity & battery → Cached reads](/connectivity).
 
 ## Fluent, typed actions
 
@@ -55,10 +55,11 @@ const stored = await dev.camera?.()?.snapshotStored?.(); // → Buffer; latest r
 const fresh = await dev.camera?.()?.snapshotLive?.(); // → { jpeg, width, height }; fresh live capture
 await dev.ptz?.()?.rotate(PtzDirection.left, 1.0); // PTZ step — see the PTZ guide
 await dev.light?.()?.setBrightness(50); // spotlight 1–100
-await dev.arming?.()?.setMode(ArmingMode.home); // guard mode
 await dev.lock?.()?.lock?.();
 await dev.lock?.()?.setAutoLock?.(true, 60); // enable, 60s delay
 await dev.lock?.()?.setRainMode?.(true); // P2P video lock only — optional accessor
+const [listed] = await eufy.getDevices();
+await eufy.setHouseMode(listed!.houseId!, ArmingMode.home); // arm the stations of a house
 ```
 
 Argument constants (`PtzDirection`, `ArmingMode`, …) are exported from the package — pass the named

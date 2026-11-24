@@ -81,7 +81,7 @@ describe("lock capability — Bluetooth lock family", () => {
     await acts.lock!();
     await acts.unlock!();
     expect(sent.map((c) => c.kind)).toEqual(["doorlock-pass-through-actuate", "doorlock-pass-through-actuate"]);
-    expect(sent[0]).toMatchObject({ engage: true, adminUserId: bluetoothCtx.adminUserId, shortUserId: "0004" });
+    expect(sent[0]).toMatchObject({ engage: true, shortUserId: "0004" });
     expect(sent[1]).toMatchObject({ engage: false, deviceSn: bluetoothCtx.serial });
   });
 
@@ -247,6 +247,15 @@ describe("lock capability module", () => {
     await expect(lockOf({ ...mqttCtx, shortUserId: undefined }).acts.unlock!()).rejects.toThrow(/member identity/);
   });
 
+  it("lock/unlock go without an admin id where the app's frame does: keyed (userId left out) and pass-through", async () => {
+    for (const ctx of [classicCtx, bluetoothCtx]) {
+      const { acts, sent } = lockOf({ ...ctx, adminUserId: undefined });
+      await acts.lock!();
+      expect(sent).toHaveLength(1);
+      expect((sent[0] as { adminUserId?: string }).adminUserId).toBeUndefined();
+    }
+  });
+
   it("getAutoLockState delegates to the injected ff09Settings reader, on either transport", async () => {
     const snapshot = {
       enabled: true,
@@ -296,7 +305,6 @@ describe("lock capability module", () => {
       paramType: 6000,
       type: "bool",
       kind: "boolean",
-      provenance: "verified",
       writable: true,
     });
 
@@ -305,7 +313,6 @@ describe("lock capability module", () => {
       paramType: 1101,
       type: "number",
       kind: "percent",
-      provenance: "verified",
       readAliases: [{ paramType: 6001 }],
     });
   });
@@ -405,7 +412,6 @@ describe("lock capability — SmartDrop lid", () => {
         payload: { isOpen: 1, userIndex: 0 },
         channel: 0,
         mValue3: 0,
-        level2Sender: "set-payload",
       },
     ]);
     expect(lid.lock).toBeUndefined();

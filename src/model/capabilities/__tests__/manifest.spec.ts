@@ -93,6 +93,20 @@ const tableReads = (m: CapabilityModule, paramIds: Set<number>): string[] =>
 
 describe("describeCapabilities — enumeration of the live bound objects", () => {
   it("describes only the alarm-output members installed for each verified siren family", () => {
+    const alarm = (model: string, values: string[]) =>
+      parseThingsList({
+        things_list: [
+          {
+            profile: { product_code: model },
+            properties: [
+              {
+                identifier: "set_alarm_type",
+                data_type: { type: "ienum", specs: { eunmList: values.map((value) => ({ value, desc: "" })) } },
+              },
+            ],
+          },
+        ],
+      })[model];
     const describeSiren = (ctx: CommandContext) =>
       describeCapabilities(buildActions(["siren"], { ctx, sink, read: () => undefined })).find(
         (entry) => entry.capability === "siren",
@@ -102,9 +116,10 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
       codec: "station",
       deviceType: 0,
       model: "T8010",
-      accountName: "tester",
+      serial: "T8010P0000000001",
       capabilities: new Set(["siren"]),
       paramIds: new Set([1281, 1282]),
+      things: alarm("T8010", ["0", "3"]),
     });
     const camera = describeSiren({
       channel: 1,
@@ -112,15 +127,19 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
       deviceType: 9,
       model: "T8114",
       homeBaseAttached: true,
+      stationSerial: "T8010P0000000009",
       capabilities: new Set(["siren"]),
-      paramIds: new Set([1015]),
+      paramIds: new Set(),
+      things: alarm("T8114", ["0"]),
     });
     const standalone = describeSiren({
       channel: 16,
       codec: "sensor",
       deviceType: 123,
+      model: "T90R0",
       capabilities: new Set(["siren"]),
       paramIds: new Set([61008, 1825]),
+      things: alarm("T90R0", ["0"]),
     });
     const unverified = describeSiren({
       channel: 0,
@@ -135,12 +154,11 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
     expect(homeBase.actions.map((action) => action.name)).toEqual([
       "setAlarmVolume",
       "setAlarmTone",
+      "test",
       "trigger",
       "stop",
     ]);
-    expect(homeBase.actions.find((action) => action.name === "trigger")?.args).toEqual([
-      { name: "seconds", kind: "seconds", min: 1, description: "A positive whole-number duration." },
-    ]);
+    expect(homeBase.actions.find((action) => action.name === "trigger")?.args).toBeUndefined();
     expect(camera.reads).toEqual([]);
     expect(camera.actions.map((action) => action.name)).toEqual(["trigger", "stop"]);
     expect(standalone.reads.map((read) => read.accessor)).toEqual(["active", "volume"]);
@@ -244,11 +262,11 @@ describe("describeCapabilities — enumeration of the live bound objects", () =>
    * a device reporting a value it will not accept back. No member states one today.
    */
   it("points an action at the read whose domain it accepts, rather than restating it", () => {
-    const arming = describeAll(allParams()).find((d) => d.capability === "arming")!;
-    const setMode = arming.actions.find((a) => a.name === "setMode")!;
-    expect(setMode.reflects).toBe("mode");
-    expect(arming.reads.find((r) => r.accessor === setMode.reflects)!.values).toEqual([0, 1, 2, 3, 4, 5, 6, 47, 63]);
-    expect(setMode.args![0].values).toBeUndefined();
+    const doorbell = describeAll(allParams()).find((d) => d.capability === "doorbell")!;
+    const set = doorbell.actions.find((a) => a.name === "setDingdongRingtone")!;
+    expect(set.reflects).toBe("dingdongRingtone");
+    expect(doorbell.reads.find((r) => r.accessor === set.reflects)!.values).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(set.args![0].values).toBeUndefined();
   });
 
   /** An action taking nothing SAYS so, so a caller can offer it as a plain button. */

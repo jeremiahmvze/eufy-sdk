@@ -346,9 +346,34 @@ describe("resolveThing", () => {
     expect(standalone("2.3.0.0").properties.hidden).toBeUndefined();
     expect(Object.keys(standalone("2.3.0.0").actions)).toEqual(["always"]);
   });
+
+  it("keeps a property whose read conditions fail but reads no value off it (a T8170 below 3.4.0.0)", () => {
+    const t8170 = parseThingsList({
+      things_list: [
+        {
+          profile: { product_code: "T8170" },
+          properties: [
+            prop("is_connect_webrtc", "int", {
+              data_type: { type: "int", specs: { defaultValue: "1" } },
+              read_conditions: cond(
+                { type: "device_version", qualifier: ">=", value: "3.4.0.0" },
+                { type: "device_sn", qualifier: "SE", value: "^.{6}[^2]" },
+                { type: "parent_sn", qualifier: "RE", value: "^(?!T8030).*$" },
+              ),
+            }),
+          ],
+        },
+      ],
+    }).T8170!;
+    const at = (firmwareVersion: string) =>
+      resolveThing(t8170, { serial: "T8170P0000000000", firmwareVersion }).properties.is_connect_webrtc;
+    expect(at("3.3.6.0")).toBeDefined();
+    expect(at("3.3.6.0")?.defaultValue).toBeUndefined();
+    expect(at("3.4.0.0")?.defaultValue).toBe("1");
+  });
 });
 
-describe("a member's thing gives its enum options on the device", () => {
+describe("a member's thing no longer gives its enum options from the description's wire values", () => {
   const member = {
     param: 1,
     type: "number" as const,
@@ -366,15 +391,14 @@ describe("a member's thing gives its enum options on the device", () => {
     data_type: { type: "enum", specs: { eunmList: wire.map((associatedValue) => ({ associatedValue })) } },
   });
 
-  it("takes the first listed identifier the device has, keeping the values the member names", () => {
+  it("keeps the static domain whatever the listed identifier's wire values, the bundle's data deciding", () => {
     expect(enumOf([listed("mode", ["0", "1", "2"]), listed("mode_new", ["2", "0", "7"])])).toEqual({
-      values: { 0: "Off", 2: "High" },
-      dynamic: true,
+      values: member.enumValues,
+      dynamic: false,
     });
-    expect(enumOf([{ identifier: "mode", data_type: { type: "bool" } }]).values, "a bool is 0 and 1").toEqual({
-      0: "Off",
-      1: "Low",
-    });
+    expect(enumOf([{ identifier: "mode", data_type: { type: "bool" } }]).values, "a bool too").toEqual(
+      member.enumValues,
+    );
   });
 
   it("keeps the static domain without a listed property, a named value or an enum", () => {
