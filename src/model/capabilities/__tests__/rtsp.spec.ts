@@ -73,6 +73,7 @@ describe("rtsp capability module", () => {
     expect(sent).toEqual(
       [1, 0].map((value) => ({
         kind: "set-param",
+        stationAccount: true,
         param: RTSP_PARAM.STREAM_SWITCH,
         value,
         channel: 2,

@@ -1,6 +1,6 @@
 import type { Command } from "../../core/contracts.js";
 import { asBool, enumLabels } from "../../core/util.js";
-import { setJson, setPayload } from "./access.js";
+import { setJson, setPayload, setScalar } from "./access.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
 import type { CapabilityModule, CommandContext, DecodedState, InboundSignal } from "./types.js";
 
@@ -110,13 +110,7 @@ export type RtspActions = Surface<typeof RTSP_MEMBERS>;
  * publishing, in the URL it pushes under the same id.
  */
 function publishCommand(on: boolean, ctx: CommandContext): Command {
-  return {
-    kind: "set-param",
-    param: RTSP_PARAM.STREAM_SWITCH,
-    value: on ? 1 : 0,
-    channel: ctx.channel,
-    unanswered: true,
-  };
+  return { ...setScalar(RTSP_PARAM.STREAM_SWITCH, on ? 1 : 0, ctx), unanswered: true };
 }
 
 /**

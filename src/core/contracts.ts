@@ -317,12 +317,21 @@ const COMMAND_OBSERVATION = Symbol("command-observation");
 export type Command =
   /**
    * The app's group-A scalar body `[u32 channel][u32 value][account_id → 128]`, or with `"int-pair"` the bare
-   * `[u32 channel][u32 value]`; the transport injects the account id and the session seals it. `unanswered`
-   * marks a param the device returns no result code under: the write is sent in its turn and holds no slot
-   * waiting for an answer.
+   * `[u32 channel][u32 value]`; the transport injects the account id and the session seals it. On this, `set-json-raw`,
+   * `set-payload` and `p2p-string`, `stationAccount` sends the station record's member account id, the one the app's
+   * legacy direct senders send, in place of the device record's `admin_user_id`. `unanswered` marks a param the
+   * device returns no result code under: the write is sent in its turn and holds no slot waiting for an answer.
    */
   (
-    | { kind: "set-param"; param: number; value: number; form?: "int-pair"; channel: number; unanswered?: true }
+    | {
+        kind: "set-param";
+        param: number;
+        value: number;
+        form?: "int-pair";
+        channel: number;
+        stationAccount?: true;
+        unanswered?: true;
+      }
     /** `data` is a number where the bundle sends `param_data`. */
     | { kind: "set-json"; param: number; data: Record<string, unknown> | number; channel: number }
     // `set-json-raw` differs from `set-json` in ONE way: the wire's outer P2P command IS `cmd` itself
@@ -333,6 +342,7 @@ export type Command =
         cmd: number;
         data: Record<string, unknown>;
         channel: number;
+        stationAccount?: true;
       }
     | {
         kind: "set-payload";
@@ -347,6 +357,7 @@ export type Command =
         counter?: "bump" | "current";
         /** How long the device's answer is awaited, never resent, where the app bounds the request itself. */
         answerMs?: number;
+        stationAccount?: true;
         /**
          * A lock setting over its station (v2): the transport builds the params as the app's `handleV2Payload`,
          * `{lock_payload, seq_num, apiCommand, time}`, the `ff09` frame of these fields for the lock.
@@ -375,13 +386,15 @@ export type Command =
         channel: number;
         /** How long the device's answer is awaited, never resent, where the app bounds the request itself. */
         answerMs?: number;
+        /** The station record's member account id in place of the admin's, as on `set-param`. */
+        stationAccount?: true;
       }
     /**
-     * The app's native string body (`[u32 0][u8 channel][value][account_id]`) on the station channel 255,
-     * `channel` the device's own: a rename (1216, 1217) or a time zone (1215). The transport injects the
-     * account id and the session seals it.
+     * The app's native string body (`[u16 int][u16 0][u8 channel][value][account_id]`) on the station channel 255,
+     * `channel` the device's own, `int` 0 unless given: a rename (1216, 1217), a time zone (1215) or a sunrise
+     * switch (1414). The transport injects the account id and the session seals it.
      */
-    | { kind: "p2p-string"; cmd: number; value: string; channel: number }
+    | { kind: "p2p-string"; cmd: number; value: string; channel: number; int?: number; stationAccount?: true }
     /** P2P int-plus-string frame; the transport injects the authenticated account id string. */
     | {
         kind: "p2p-int-string";
@@ -407,7 +420,6 @@ export type Command =
      */
     | ({ kind: "doorlock-pass-through-actuate" } & Omit<Ff09Identity, "adminUserId">)
     | { kind: "ff09-autolock"; adminUserId: string; deviceSn: string; enabled: boolean; delaySeconds?: number }
-    | { kind: "ff09-setting-toggle"; adminUserId: string; deviceSn: string; settingId: number; value: boolean }
     // `mqtt-dp` — an `eufy_life` secure-MQTT "DP" TLV write (smart lights + kin). The capability supplies
     // its own opaque `mqttCmdCode` (the outer envelope's dispatch id) + `cmdCode` (the feature id whose
     // low byte is the frame subtype) + already-tagged scalar `fields`; the router does ONLY the generic
@@ -424,6 +436,15 @@ export type Command =
         subVersion?: number;
         functionType?: number;
         encrypt?: boolean;
+        /**
+         * Sent as the lock's own MQTT settings service does: no ack asked, no broker fields, sent once, done on the
+         * lock's result code 0 (the first byte of its answer, matched on opcode and `time`).
+         */
+        lockService?: boolean;
+        /** The `trans` payload's `apiCommand` (1940 when it states none). */
+        apiCommand?: number;
+        /** Read tags whose bytes follow `fields`, read off the lock first, or bytes as given (lock service). */
+        preserve?: readonly (number | Buffer)[];
         /** The descriptor's `timeout`, seconds: how long the app waits for the reply (5 s when it states none). */
         timeoutS?: number;
         /** The descriptor's `retryCount`: sends again while no reply comes (1 when it states none). */
@@ -437,6 +458,8 @@ export type Command =
         payload: unknown;
         /** The descriptor's `needAck`; the reply is waited for unless it is `false`. */
         needAck?: boolean;
+        /** Sent as the lock's own MQTT settings service does, done on its answer's `payload.result` 0. */
+        lockService?: boolean;
         timeoutS?: number;
         retryCount?: number;
       }

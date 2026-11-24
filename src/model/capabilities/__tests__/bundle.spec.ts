@@ -1,4 +1,4 @@
-import { frameCommand, qualityOf, thingRead, thingWrite, type BundleFrame } from "../bundle.js";
+import { frameCommand, qualityOf, thingRead, thingReadback, thingWrite, type BundleFrame } from "../bundle.js";
 import { parseThingsList, type ThingDescription } from "../thing-description.js";
 import { power } from "./bundle-fixture.js";
 import type { CommandContext } from "../types.js";
@@ -766,6 +766,76 @@ describe("the regenerated data's forms", () => {
     expect(sent({ index: 0 }), "no pots: the bundle throws").toBeUndefined();
   });
 
+  it("writes the T8425/T8426 out-of-view zone as the app's Java: 1350/6266, x1000 rounded, truncated on delete, cached on 6266", () => {
+    const pots = [
+      {
+        points: [
+          { x: 0.1004, y: 0.2006 },
+          { x: 0.5, y: 0.2006 },
+          { x: 0.5, y: 0.9 },
+        ],
+      },
+    ];
+    const id = "detection_range_area_activityzone_config";
+    const zone = (value: object, model = "T8426") => thingWrite(id, JSON.stringify(value), ctx(model));
+    const polygen = (points: object[]) => ({ isDetectZone: true, isEditable: false, isSaved: true, points });
+    expect(zone({ index: 2, pots })).toEqual({
+      kind: "set-payload",
+      cmd: 6266,
+      payload: {
+        activezone: {
+          polygens: [
+            polygen([
+              { x: 100, y: 201 },
+              { x: 500, y: 201 },
+              { x: 500, y: 900 },
+            ]),
+          ],
+        },
+        index: 2,
+      },
+      channel: 3,
+      stationAccount: true,
+    });
+    expect(zone({ index: 2, pots, delete: true })).toMatchObject({
+      payload: {
+        activezone: {
+          polygens: [
+            polygen([
+              { x: 100, y: 200 },
+              { x: 500, y: 200 },
+              { x: 500, y: 900 },
+            ]),
+          ],
+        },
+      },
+    });
+    expect(zone({ index: 2, pots }, "T8214"), "a product whose screen does not send it").toBeUndefined();
+    const cached = thingReadback(id, JSON.stringify({ index: 0, pots: [] }), ctx("T8425"));
+    expect(cached).toEqual({ param: 6266, raw: Buffer.from('{"polygens":[],"zonecount":0}').toString("base64") });
+  });
+
+  it("reads the T8425/T8426 out-of-view zones off 6266 as the app's list, each position as the write's {index, pots}", () => {
+    const id = "detection_range_area_activityzone_config";
+    const pot = { isDetectZone: true, isEditable: false, isSaved: true, points: [{ x: 100, y: 250 }] };
+    const list = [
+      { position: 1, active: [pot], privacy: [] },
+      { position: 3, active: [] },
+    ];
+    const read = (v: unknown, model = "T8425") =>
+      thingRead(id, ctx(model), (p) => (p === 6266 ? Buffer.from(JSON.stringify(v)).toString("base64") : undefined));
+    expect(read(list)).toBe(
+      JSON.stringify([
+        { index: 1, pots: [{ points: [{ x: 0.1, y: 0.25 }] }] },
+        { index: 3, pots: [] },
+      ]),
+    );
+    expect(read({ polygens: [pot], zonecount: 1 }), "the object the app caches on its own answer is no list").toBe(
+      "[]",
+    );
+    expect(read(list, "T8214")).toBeUndefined();
+  });
+
   it("writes an unpacked zone as the ZoneInfo itself, spread in the data (T8214 1700/6042)", () => {
     const pots = [
       {
@@ -1163,13 +1233,14 @@ test("timezone_set: written, read and reflected as the app's own code does, redi
   const berlin = "CET-1CEST,M3.5.0,M10.5.0/3|1.1375|Europe/Berlin";
   const standalone = ctx("T8410", { things: td });
   const cmd = index.buildCommand("timezone_set", "Europe/Berlin", standalone)!;
-  expect(cmd).toEqual({ kind: "p2p-string", cmd: 1215, value: berlin, channel: 3 });
+  expect(cmd).toEqual({ kind: "p2p-string", cmd: 1215, value: berlin, channel: 3, stationAccount: true });
   expect(commandReflection(cmd)).toEqual({ param: 1215, raw: "Europe/Berlin" });
   expect(index.buildCommand("timezone_set", "Europe/Berlin", ctx("T8410", { things: td, ...attached }))).toEqual({
     kind: "p2p-string",
     cmd: 1215,
     value: berlin,
     channel: 255,
+    stationAccount: true,
   });
   expect(index.buildCommand("timezone_set", "Mars/Olympus", standalone)).toMatchObject({ value: "" });
   const underCamera = { ...standalone, stationSerial: "T8214P0000000000", stationChannel: 1 };
@@ -1199,4 +1270,70 @@ test("timezone_set: written, read and reflected as the app's own code does, redi
   expect(read(undefined)).toBeUndefined();
   const own = index.thingValue("timezone_set", { ...standalone, deviceTimezone: berlin }, () => undefined);
   expect(own, "the device record's zone when 1215 is unreported").toBe("Europe/Berlin");
+});
+
+describe("legacy floodlight writes the app sends in Java", () => {
+  const load = async () => {
+    vi.resetModules();
+    return { index: await import("../index.js"), ...(await import("../../../core/contracts.js")) };
+  };
+  test("timer_for_lights: the UI value's seconds on 1409, read back as the UI value", async () => {
+    const { index, commandReflection } = await load();
+    const td = things({ timer_for_lights: ["0", "1", "2", "3", "4"] });
+    const cmd = index.buildCommand("timer_for_lights", 2, ctx("T8423", { things: td }))!;
+    expect(cmd).toEqual({ kind: "set-param", param: 1409, value: 180, channel: 3, stationAccount: true });
+    expect(commandReflection(cmd)).toEqual({ param: 1409, raw: "180" });
+    expect(index.buildCommand("timer_for_lights", 2, ctx("T8110", { things: td })), "RN-routed").toBeUndefined();
+    const read = (raw: string) => index.thingValue("timer_for_lights", ctx("T8420", { things: td }), () => raw);
+    expect(read("900")).toBe("4");
+    expect(read("5"), "unknown seconds").toBe("0");
+  });
+  test("spotlight_schedule_switch: the string body with the reported location and the switch as its int", async () => {
+    const { index } = await load();
+    const td = things({ spotlight_schedule_switch: "bool" });
+    const located = ctx("T8424", {
+      things: td,
+      paramValue: (p) => (p === 1415 ? '{"lat":"48.85","lng":"2"}' : undefined),
+    });
+    expect(index.buildCommand("spotlight_schedule_switch", true, located)).toEqual({
+      kind: "p2p-string",
+      cmd: 1414,
+      value: '{"lat": "48.85","lng": "2.0"}',
+      channel: 0,
+      int: 1,
+      stationAccount: true,
+    });
+    const unlocated = ctx("T8424", { things: td });
+    expect(index.buildCommand("spotlight_schedule_switch", true, unlocated), "no location").toBeUndefined();
+    expect(index.buildCommand("spotlight_schedule_switch", false, unlocated)).toMatchObject({ value: "", int: 0 });
+    expect(index.buildCommand("spotlight_schedule_switch", true, { ...located, model: "T8425" })).toBeUndefined();
+    expect(index.thingValue("spotlight_schedule_switch", unlocated, (p) => (p === 1414 ? "1" : undefined))).toBe(
+      "true",
+    );
+  });
+  test("spotlight_schedule_config: the schedules as JSON on 255, read back from 1404's base64 JSON", async () => {
+    const { index, commandReflection } = await load();
+    const td = things({ spotlight_schedule_config: [""] });
+    const loop = [{ enable: 1, start_h: 18, start_m: 0, end_h: 6, end_m: 0, cross_day: 1, week: [0, 6] }];
+    const value = JSON.stringify({ loop });
+    const schedules = { loop: [{ ...loop[0], week: [{ day: 0 }, { day: 6 }] }], once: [] };
+    const cmd = index.buildCommand("spotlight_schedule_config", value, ctx("T8420", { things: td }))!;
+    expect(cmd).toEqual({
+      kind: "set-json-raw",
+      cmd: 1404,
+      data: { schedules },
+      channel: 255,
+      stationAccount: true,
+    });
+    const reported = Buffer.from(JSON.stringify({ account_id: "", schedules })).toString("base64");
+    expect(commandReflection(cmd)).toEqual({ param: 1404, raw: reported });
+    const read = (raw?: string) =>
+      index.thingValue("spotlight_schedule_config", ctx("T8420", { things: td }), () => raw);
+    expect(read(reported)).toBe(JSON.stringify({ loop: schedules.loop }));
+    expect(read(Buffer.from("{}").toString("base64")), "no schedules").toBe('{"loop":[]}');
+    expect(
+      index.buildCommand("spotlight_schedule_config", value, ctx("T8110", { things: td })),
+      "RN-routed",
+    ).toBeUndefined();
+  });
 });

@@ -62,6 +62,8 @@ export interface RtcRoute {
   attached: boolean;
   /** The payload's `account_id`: the target record's stated `admin_user_id`; the logged-in user when absent. */
   adminUserId?: string;
+  /** The station record's member account id, which a command stating `stationAccount` carries instead. */
+  stationAccountId?: string;
   /** The station record's `p2p_did`, `p2p_license` and first IPv4 `signaling_servers` host. */
   did: string;
   lic: string;
@@ -199,7 +201,7 @@ export class RtcCommandRouter {
         if (cmd.lock || cmd.counter) break;
         const { channel, mValue3, unzip } = cmd;
         const body = setPayloadJson(cmd.cmd, cmd.payload, {
-          accountId: this.accountId(route),
+          accountId: this.accountId(route, cmd.stationAccount),
           channel,
           mValue3,
           unzip,
@@ -208,12 +210,15 @@ export class RtcCommandRouter {
       }
       case "set-json-raw": {
         if (nativeGroup(cmd.cmd) !== "E") break;
-        const body = JSON.stringify({ account_id: this.accountId(route), ...cmd.data });
+        const body = JSON.stringify({ account_id: this.accountId(route, cmd.stationAccount), ...cmd.data });
         return { id: cmd.cmd, body, channel: JSON_ON_DEVICE_CHANNEL.includes(cmd.cmd) ? cmd.channel : STATION_CHANNEL };
       }
       case "p2p-string": {
         if (nativeGroup(cmd.cmd) !== "G") break;
-        const body = Buffer.concat([buildStringBody(cmd.channel, cmd.value, this.accountId(route)), eccPublicHex()]);
+        const body = Buffer.concat([
+          buildStringBody(cmd.channel, cmd.value, this.accountId(route, cmd.stationAccount), cmd.int),
+          eccPublicHex(),
+        ]);
         return { id: cmd.cmd, body, channel: STATION_CHANNEL };
       }
       case "p2p-int-string": {
@@ -224,16 +229,17 @@ export class RtcCommandRouter {
       }
       case "set-param":
       case "p2p-station-scalar": {
-        const { value, channel } = cmd;
+        const { value, channel, stationAccount } = cmd;
         const id = cmd.kind === "set-param" ? cmd.param : cmd.cmd;
+        const account = this.accountId(route, stationAccount);
         const group = nativeGroup(id);
         if (group === "I") return { id, body: u32s(channel, value), channel };
         if (cmd.kind === "set-param" && cmd.form) break;
-        if (group === "A") return { id, body: buildDirectBinaryBody(value, this.accountId(route), channel), channel };
+        if (group === "A") return { id, body: buildDirectBinaryBody(value, account, channel), channel };
         if (group === "B" || group === "C")
           return {
             id,
-            body: buildDirectBinaryBody(value, this.accountId(route)),
+            body: buildDirectBinaryBody(value, account),
             channel: group === "B" ? STATION_CHANNEL : channel,
           };
       }
@@ -383,8 +389,8 @@ export class RtcCommandRouter {
     for (const sn of [...this.stations.keys()]) this.drop(sn);
   }
 
-  private accountId(route: RtcRoute): string {
-    const id = route.adminUserId ?? this.deps.userId();
+  private accountId(route: RtcRoute, station?: true): string {
+    const id = (station ? route.stationAccountId : route.adminUserId) ?? this.deps.userId();
     if (id === undefined) throw new Error(`rtc: not logged in, cannot drive ${route.stationSn}`);
     return id;
   }

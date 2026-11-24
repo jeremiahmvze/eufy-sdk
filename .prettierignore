@@ -11,3 +11,5 @@ docs/public/logo/
 
 # generated data, written by the bundle-wires generator
 src/model/capabilities/bundle-wires.generated.json
+# generated data, written by scripts/dev/thing-catalog.ts
+src/model/capabilities/thing-catalog.generated.json

@@ -8,10 +8,11 @@
  */
 import { asBool, isStationSerial } from "../../core/util.js";
 import { encodeVarint, RawDpWriter } from "../../core/raw-dp-writer.js";
-import { aiotDp, setJson, setJsonRaw, setPayload, setScalar, setStationScalar } from "./access.js";
+import { aiotDp, setJson, setPayload } from "./access.js";
 import type { AvailabilityContext, CommandContext } from "./types.js";
 import { reflectCommand, type Command, type LiveFrames, type SessionFrame } from "../../core/contracts.js";
 import type { ThingMember } from "./thing-description.js";
+import { catalogOptions } from "./thing-catalog.js";
 import DATA from "./bundle-wires.generated.json" with { type: "json" };
 import TIMEZONES from "./timezones.json" with { type: "json" };
 
@@ -70,6 +71,14 @@ export interface BundleFrame extends SessionFrame {
   timeout?: number | string;
   retryCount?: number;
   needAck?: boolean;
+  /** MQTT: sent as the lock's own settings service does (no ack asked, its result code awaited, sent once). */
+  lockService?: boolean;
+  /** MQTT `ff09`: the payload's `apiCommand` where it is not 1940. */
+  apiCommand?: number;
+  /** MQTT `ff09`: the settings reply tags whose bytes follow the TLV, read off the lock first. */
+  preserve?: readonly number[];
+  /** P2P 1350: the station record's member account id in place of the admin's. */
+  stationAccount?: true;
   next?: BundleFrame[];
   after?: BundleFrame;
   /** A lock setting over its station: the `ble` the app builds the 1350 params from. */
@@ -188,7 +197,105 @@ export function bundleEntry(identifier: string, ctx: AvailabilityContext) {
   const reads = Object.fromEntries(Object.entries(entry?.read ?? {}).map(([k, r]) => [k, hex ? base64Keys(r) : r]));
   const read = memberOf(reads, topology);
   const write = memberOf(entry?.write, topology);
-  return entry && { write: write && frames(write), read, override: entry.override };
+  const esl = ESL_SETTINGS.test(model);
+  const lockService = topology === "standalone" && esl;
+  const own = write
+    ? esl
+      ? Object.fromEntries(
+          Object.entries(frames(write)).flatMap(([k, f]) => {
+            const sent = shown(model, f.lock?.tlv) && eslFrame(f, lockService);
+            return sent ? [[k, sent]] : [];
+          }),
+        )
+      : frames(write)
+    : lockService
+      ? ownStationWrite(identifier, frames(memberOf(entry?.write, "hb2")), model)
+      : undefined;
+  return (entry || own) && { write: own, read, override: entry?.override };
+}
+
+/**
+ * The products whose settings are the app's own lock settings screens (no `rn_settings` in its device
+ * configuration) and go over the lock's own MQTT settings service when it is its own station: T8531, T85V0.
+ */
+const ESL_SETTINGS = /^T85(31|V0)/;
+
+/**
+ * Whether the lock's settings screen offers a settings TLV's paramType: rain mode (7) only where the product has
+ * that screen item, the T8531.
+ */
+const shown = (model: string, tlv = ""): boolean => !/a30107/i.test(tlv) || model.startsWith("T8531");
+
+/** A 1350 body's payload without the bundle's `transaction`, as the app's legacy sender and lock service send it. */
+const bare = (f: BundleFrame): unknown => {
+  const { transaction: _, ...payload } = f.payload as Record<string, unknown>;
+  return payload;
+};
+
+/** A write through the lock's own MQTT settings service: no ack asked, its result awaited 20 s, sent once. */
+const LOCK_SERVICE = { transport: "mqtt", mqttCmdCode: 9, needAck: false, lockService: true, timeout: 20 } as const;
+
+/**
+ * A bundle frame as the lock's own settings screens send it: a notification switch (1919) through its settings
+ * service when it is its own station; night vision (1277, 6244, 6245) and the loitering groups (2715) through the
+ * app's legacy sender, a 1350 body without `transaction` under the station's member account, the groups through the
+ * settings service as `{cmd, payload}` when it is its own station.
+ */
+function eslFrame(f: BundleFrame, standalone: boolean): BundleFrame {
+  if (standalone && f.cmd === 1919) return { ...f, lockService: true, timeout: 20 };
+  if (f.body !== "json1350" || ![1277, 2715, 6244, 6245].includes(f.subCmd ?? NaN)) return f;
+  if (standalone && f.subCmd === 2715) return { ...LOCK_SERVICE, type: "json", cmd: 2715, payload: bare(f) };
+  return { ...f, payload: bare(f), stationAccount: true };
+}
+
+/** The settings TLV after `A1`/`A2` of a scalar a lock's own settings screen writes, per value, bundled or not. */
+const OWN_STATION_TLV: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  smart_lock_rain_mode_switch: { "*": "a30107a401{value:u8}" },
+  smart_lock_lock_sound_volume: { "*": "a30104a401{value:u8}" },
+  smart_lock_lock_sound_switch: { true: "a30104a40102", false: "a30104a40100" },
+};
+
+/**
+ * What a lock that is its own station sends where the bundles write only through a station, as its own settings
+ * screen does over secure MQTT (`head.cmd` 9, no ack asked, the lock's result code awaited 20 s, sent once): a
+ * settings TLV in its `ff09` frame under apiCommand 6015, a station JSON body as its `cmd` and payload. A volume
+ * write re-sends the do-not-disturb flag, start and end the lock reports; a log switch (paramType 6) carries no
+ * field; a paramType the screens never send (13, 14), nothing.
+ */
+function ownStationWrite(
+  identifier: string,
+  hb: Record<string, BundleFrame>,
+  model: string,
+): Record<string, BundleFrame> | undefined {
+  const tlvFrame = (tlv: string): BundleFrame | undefined => {
+    const type = /^a301(..)/i.exec(tlv)?.[1]?.toLowerCase();
+    if (type === "0d" || type === "0e" || !shown(model, tlv)) return undefined;
+    const payload = type === "06" ? "" : tlv;
+    const preserve = type === "04" ? [0xbd, 0xbe, 0xbf] : undefined;
+    return {
+      ...LOCK_SERVICE,
+      type: "ble",
+      cmdCode: 52,
+      apiCommand: 6015,
+      subVersion: 3,
+      functionType: 2,
+      needEncrypt: true,
+      payload,
+      ...(preserve && { preserve }),
+    };
+  };
+  const frameOf = (f: BundleFrame): BundleFrame | undefined => {
+    if (f.lock)
+      return f.lock.version === 2 ? tlvFrame(f.lock.tlv.replace(/^a104\{nowS:u32le\}a228\{userId\}/i, "")) : undefined;
+    if (f.body !== "json1350" || !f.payload || typeof f.payload !== "object") return undefined;
+    return { ...LOCK_SERVICE, type: "json", cmd: f.subCmd, payload: bare(f) };
+  };
+  const table = OWN_STATION_TLV[identifier];
+  const out = Object.entries(table ?? hb).flatMap(([k, f]) => {
+    const frame = typeof f === "string" ? tlvFrame(f) : frameOf(f);
+    return frame ? [[k, frame] as const] : [];
+  });
+  return out.length ? Object.fromEntries(out) : undefined;
 }
 
 /**
@@ -317,15 +424,15 @@ const ZONES = TIMEZONES as unknown as Readonly<Record<string, readonly [rule: st
 
 /**
  * `timezone_set` as the app's own code writes it: the id sent as `<rule>|1.<sn>|<id>` (`""` for an id not
- * in its table), through `timezone_set_redirect` where the description lists it, else in a 1215 string body,
- * on 255 under a station, else on the parent's channel.
+ * in its table), through `timezone_set_redirect` where the description lists it, else in a 1215 string body
+ * with the station's member account id, on 255 under a station, else on the parent's channel.
  */
 function timezoneWrite(id: string, ctx: CommandContext): Command | undefined {
   const zone = ZONES[id];
   const value = zone ? `${zone[0]}|1.${zone[1]}|${id}` : "";
   if (ctx.things?.properties.timezone_set_redirect) return thingWrite("timezone_set_redirect", value, ctx);
   const channel = isStationSerial(ctx.stationSerial ?? ctx.serial ?? "") ? 255 : (ctx.stationChannel ?? ctx.channel);
-  return { kind: "p2p-string", cmd: 1215, value, channel };
+  return { kind: "p2p-string", cmd: 1215, value, channel, stationAccount: true };
 }
 
 /** A reported zone as the app maps it to an id: by its `|1.` sn, else its rule or id, else its last `|` part. */
@@ -338,6 +445,99 @@ function timezoneRead(s: string): string {
     entries.find(([id, [rule]]) => rule === s || id === s) ??
     entries.find(([id]) => id === last);
   return hit?.[0] ?? s;
+}
+
+/**
+ * The param of each identifier the app's legacy floodlight light settings (opened for T8420, T8420X, T8423 and
+ * T8424) write in Java while their bundles send nothing: `timer_for_lights` 1409, `spotlight_schedule_switch` 1414,
+ * `spotlight_schedule_config` 1404.
+ */
+const floodlightParam = (identifier: string, ctx: AvailabilityContext): number | undefined =>
+  ["T8420", "T8420X", "T8423", "T8424"].includes(ctx.model ?? "") ? FLOODLIGHT_PARAMS[identifier] : undefined;
+const FLOODLIGHT_PARAMS: Readonly<Record<string, number>> = {
+  timer_for_lights: 1409,
+  spotlight_schedule_switch: 1414,
+  spotlight_schedule_config: 1404,
+};
+
+/** `timer_for_lights`' UI values as the seconds the app sends and reads on 1409, an unknown read as the first. */
+const LIGHT_TIMER = [30, 60, 180, 300, 900];
+
+/** The schedule `{loop}` a host writes, as the app's `schedules`: each day a `{day}`, `once` empty. */
+const floodlightSchedules = (value: string) => {
+  const loop = parse(value)?.loop;
+  return Array.isArray(loop) ? { loop: weekDays(loop), once: [] } : undefined;
+};
+
+/**
+ * A legacy floodlight write ({@link floodlightParam}) as the app sends it, with the station's member account id: the
+ * timer's seconds as a scalar on the device channel; the schedule as `{account_id, schedules}` JSON on 255; the
+ * sunrise switch in the string body with the reported 1415 `lat`/`lng` as `{"lat": "…","lng": "…"}` (`""` without
+ * one, which an enabling write refuses) and the switch as its int, channel 0.
+ */
+function floodlightWrite(param: number, value: string, ctx: CommandContext): Command | undefined {
+  const seconds = LIGHT_TIMER[Number(value)];
+  const schedules = floodlightSchedules(value);
+  const stationAccount = true;
+  if (param === 1409)
+    return seconds === undefined
+      ? undefined
+      : { kind: "set-param", param, value: seconds, channel: ctx.channel, stationAccount };
+  if (param === 1404)
+    return schedules && { kind: "set-json-raw", cmd: param, data: { schedules }, channel: 255, stationAccount };
+  const at = parse(ctx.paramValue?.(1415));
+  const [lat, lng] = [at?.lat, at?.lng].map((x) => parseFloat(String(x)));
+  const java = (n: number) => (Number.isInteger(n) ? n.toFixed(1) : String(n));
+  const place = Number.isFinite(lat) && Number.isFinite(lng) ? `{"lat": "${java(lat!)}","lng": "${java(lng!)}"}` : "";
+  if (value === "1" && !place) return undefined;
+  return { kind: "p2p-string", cmd: 1414, value: place, channel: 0, int: value === "1" ? 1 : 0, stationAccount };
+}
+
+const isOutOfViewZone = (identifier: string, ctx: AvailabilityContext) =>
+  identifier === "detection_range_area_activityzone_config" && ["T8425", "T8426"].includes(ctx.model ?? "");
+
+/**
+ * The out-of-view zones as that screen reads the cached 6266 (a list of `{position, active, privacy}`): each
+ * position's `active` polygons as the `{index, pots}` the write takes, points back to 0–1; `[]` where it holds no list.
+ */
+function outOfViewZoneRead(own: string): string {
+  const list = decoded(own);
+  if (!Array.isArray(list)) return "[]";
+  try {
+    return JSON.stringify(
+      list.map((e: { position: unknown; active: { points: Point[] }[] }) => ({
+        index: e.position,
+        pots: e.active.map((p) => ({ points: p.points.map((q) => ({ x: q.x / 1000, y: q.y / 1000 })) })),
+      })),
+    );
+  } catch {
+    return "[]";
+  }
+}
+
+/**
+ * `detection_range_area_activityzone_config` as the app's legacy out-of-view zone screen (T8425, T8426) writes it in
+ * Java while the bundle sends nothing: `{index, pots}`, `index` the out-of-view position and each point 0–1 of the
+ * video frame, as `{index, polygens}` with the points x1000, rounded, or truncated with `delete: true` (the polygons
+ * left once one is deleted); `undefined` for anything else.
+ */
+function outOfViewZone(identifier: string, value: string, ctx: AvailabilityContext) {
+  if (!isOutOfViewZone(identifier, ctx)) return undefined;
+  const v = parse(value);
+  if (!v || !Number.isInteger(v.index) || !Array.isArray(v.pots)) return undefined;
+  const k = (n: unknown) => Math.trunc(1000 * Number(n) + (v.delete === true ? 0 : 0.5));
+  try {
+    const polygens = (v.pots as { points: Row[] }[]).map((p) => ({
+      isDetectZone: true,
+      isEditable: false,
+      isSaved: true,
+      points: p.points.map((q) => ({ x: k(q.x), y: k(q.y) })),
+    }));
+    const finite = polygens.every((p) => p.points.every((q) => Number.isFinite(q.x) && Number.isFinite(q.y)));
+    return finite ? { index: v.index as number, polygens } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** A read's `>` ranks, each its `+`-joined params. */
@@ -545,6 +745,7 @@ function mqttJsonCommand(frame: BundleFrame, fill: (x: unknown) => unknown): Com
     cmd: frame.cmd,
     payload,
     ...(typeof frame.needAck === "boolean" && { needAck: frame.needAck }),
+    ...(frame.lockService && { lockService: true }),
     ...(typeof frame.timeout === "number" && { timeoutS: frame.timeout }),
     ...(typeof frame.retryCount === "number" && { retryCount: frame.retryCount }),
   };
@@ -591,6 +792,9 @@ function mqttCommand(frame: BundleFrame, value: unknown, fill: (x: unknown) => u
     ...(frame.subVersion !== undefined && { subVersion: frame.subVersion }),
     ...(frame.functionType !== undefined && { functionType: frame.functionType }),
     encrypt: frame.needEncrypt !== false,
+    ...(frame.lockService && { lockService: true }),
+    ...(frame.apiCommand !== undefined && { apiCommand: frame.apiCommand }),
+    ...(frame.preserve && { preserve: frame.preserve }),
     ...(typeof frame.timeout === "number" && { timeoutS: frame.timeout }),
     ...(typeof frame.retryCount === "number" && { retryCount: frame.retryCount }),
   };
@@ -620,8 +824,9 @@ function nativeCommand(
 }
 
 /**
- * The session command a `p2p` frame is, its tokens filled by `fill`. Refused where the SDK cannot send it as
- * the app does: a session other than the device's own (the default the client selects), a 1350 raw-params
+ * The session command a `p2p` frame is, its tokens filled by `fill`, with the device's admin account id as esiotkit's
+ * sender quotes it, the station's member one on a frame stating `stationAccount`. Refused where the SDK cannot send
+ * it as the app does: a session other than the device's own (the default the client selects), a 1350 raw-params
  * frame (`params.cmd` 1003), or a 1700 live-start (`extValue` > 0).
  */
 function sessionCommand(
@@ -668,21 +873,23 @@ function sessionCommand(
     }
     return {
       ...command,
+      ...(frame.stationAccount && { stationAccount: true as const }),
       ...(frame.unzipParams && object && { unzip: true as const }),
       ...(counter && { counter }),
     } as Command;
   }
   if (counter || frame.unzipParams) return undefined;
-  if (object && frame.body === "json") return setJsonRaw(cmd, object, c, header);
+  if (object && frame.body === "json") return { kind: "set-json-raw", cmd, data: object, channel: header };
   if (frame.seal) return undefined;
   if (frame.body === "json1700" && (object || typeof filled === "number"))
     return setJson(sub, object ?? (filled as number), c);
   if (frame.body === "native")
     return nativeCommand(frame, object, isStationSerial(ctx.serial ?? "") ? 255 : ctx.channel);
   if (scalar === undefined) return undefined;
-  if (frame.body === "groupA") return setScalar(cmd, scalar, c);
-  if (frame.body === "pair") return setScalar(cmd, scalar, c, "int-pair");
-  if (frame.body === "groupB") return setStationScalar(cmd, scalar, header);
+  if (frame.body === "groupA") return { kind: "set-param", param: cmd, value: scalar, channel: c.channel };
+  if (frame.body === "pair")
+    return { kind: "set-param", param: cmd, value: scalar, channel: c.channel, form: "int-pair" };
+  if (frame.body === "groupB") return { kind: "p2p-station-scalar", cmd, value: scalar, channel: header };
   return undefined;
 }
 
@@ -996,6 +1203,14 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
  */
 export function thingWrite(identifier: string, value: string, ctx: CommandContext, key = value): Command | undefined {
   if (identifier === "timezone_set") return timezoneWrite(value, ctx);
+  const floodlight = floodlightParam(identifier, ctx);
+  if (floodlight) return floodlightWrite(floodlight, value, ctx);
+  const zone = outOfViewZone(identifier, value, ctx);
+  // Sent as 1350/6266 on the device channel with the station's member account id.
+  if (zone) {
+    const payload = { activezone: { polygens: zone.polygens }, index: zone.index };
+    return { kind: "set-payload", cmd: 6266, payload, channel: ctx.channel, stationAccount: true };
+  }
   if (javaOverridden(identifier, ctx)) return undefined;
   // A `{paramType, param}` lock settings write (JSON): its frame is the paramType's, its marks the param's fields.
   const struct = structOf(value);
@@ -1312,6 +1527,21 @@ function structOf(value: string): { paramType: number; param: Record<string, unk
 /** The raw value `param` (by default the first the bundle reads) holds for `identifier`'s `value`. */
 export function thingReadback(identifier: string, value: string, ctx: AvailabilityContext, param?: number) {
   if (identifier === "timezone_set") return { param: 1215, raw: value };
+  const floodlight = floodlightParam(identifier, ctx);
+  if (floodlight === 1409) return { param: 1409, raw: String(LIGHT_TIMER[Number(value)]) };
+  if (floodlight === 1414) return { param: 1414, raw: value };
+  if (floodlight) {
+    const schedules = floodlightSchedules(value);
+    return (
+      schedules && { param: 1404, raw: Buffer.from(JSON.stringify({ account_id: "", schedules })).toString("base64") }
+    );
+  }
+  // The out-of-view zone the app caches on 6266 on its answer: `{polygens, zonecount}`.
+  const zone = outOfViewZone(identifier, value, ctx);
+  if (zone) {
+    const raw = JSON.stringify({ polygens: zone.polygens, zonecount: zone.polygens.length });
+    return { param: 6266, raw: Buffer.from(raw).toString("base64") };
+  }
   const read = bundleEntry(identifier, ctx)?.read;
   param ??= ranksOf(read)[0]?.[0];
   const raw = read && param !== undefined ? rawOn(read, param, value) : undefined;
@@ -1333,6 +1563,16 @@ export function thingRead(
     return s === undefined ? undefined : timezoneRead(s);
   }
   if (identifier === "device_is_online") return ctx.online && String(ctx.online());
+  const floodlight = floodlightParam(identifier, ctx);
+  const own = floodlight === undefined ? undefined : raw(floodlight);
+  if (own !== undefined && floodlight === 1409) return String(Math.max(0, LIGHT_TIMER.indexOf(Number(own))));
+  if (own !== undefined && floodlight === 1414) return String(own === "1");
+  if (own !== undefined && floodlight === 1404) {
+    const loop = objectOf(objectOf(decoded(own))?.schedules)?.loop;
+    return JSON.stringify({ loop: Array.isArray(loop) ? loop : [] });
+  }
+  const zones = raw(6266);
+  if (zones !== undefined && isOutOfViewZone(identifier, ctx)) return outOfViewZoneRead(zones);
   if (javaOverridden(identifier, ctx)) return undefined;
   const read = bundleEntry(identifier, ctx)?.read;
   for (const rank of ranksOf(read)) {
@@ -1374,7 +1614,8 @@ function readParams(identifiers: readonly string[], enumRead: boolean): [param: 
  * A boolean member writes `"1"`/`"0"` and reads each param with the polarity the bundle's map gives it. An
  * `enumerated` member's value is the app's UI value, the description's own: it reads `map[raw]` (a quality
  * config through its decoder) and writes the UI values this topology has a frame for, labelled as the
- * description names them, a `bool` property's 0/1 as Off/On.
+ * description names them, a `bool` property's 0/1 as Off/On. Its `enumValues` are every option the products'
+ * descriptions name for `identifiers` ({@link catalogOptions}); a bound device's own are its description's.
  */
 export function bundled(identifiers: readonly string[], param: number, enumerated = false) {
   const id = (ctx: AvailabilityContext) => identifiers.find((i) => ctx.things?.properties[i]);
@@ -1400,9 +1641,11 @@ export function bundled(identifiers: readonly string[], param: number, enumerate
     const values = keys.includes("*") ? (listed(ctx) ?? []).map((m) => m.value) : keys;
     return [...new Set(values)].filter((v) => /^-?\d+$/.test(v) && builds(ctx, v)).map(Number);
   };
+  const options = enumerated ? catalogOptions(identifiers) : undefined;
   return {
     param,
     thing: identifiers,
+    ...(options ? { enumValues: options } : {}),
     available: (ctx: AvailabilityContext): boolean =>
       enumerated ? writeDomain(ctx).length > 0 : id(ctx) !== undefined && (builds(ctx, "1") || builds(ctx, "0")),
     readAvailable: reads(param),
