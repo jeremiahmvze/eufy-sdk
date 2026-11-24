@@ -85,6 +85,7 @@ export type {
   ThingMember,
   ThingProperty,
 } from "./thing-description.js";
+export { thingCatalog, type ThingCatalogEntry, type ThingOptionSet } from "./thing-catalog.js";
 import { DISPLAY } from "./display.js";
 import { LOCATE } from "./locate.js";
 import { INFO } from "./info.js";

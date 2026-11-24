@@ -12,6 +12,7 @@ import { aiotDp, setJson, setPayload } from "./access.js";
 import type { AvailabilityContext, CommandContext } from "./types.js";
 import { reflectCommand, type Command, type LiveFrames, type SessionFrame } from "../../core/contracts.js";
 import type { ThingMember } from "./thing-description.js";
+import { catalogOptions } from "./thing-catalog.js";
 import DATA from "./bundle-wires.generated.json" with { type: "json" };
 import TIMEZONES from "./timezones.json" with { type: "json" };
 
@@ -1613,7 +1614,8 @@ function readParams(identifiers: readonly string[], enumRead: boolean): [param: 
  * A boolean member writes `"1"`/`"0"` and reads each param with the polarity the bundle's map gives it. An
  * `enumerated` member's value is the app's UI value, the description's own: it reads `map[raw]` (a quality
  * config through its decoder) and writes the UI values this topology has a frame for, labelled as the
- * description names them, a `bool` property's 0/1 as Off/On.
+ * description names them, a `bool` property's 0/1 as Off/On. Its `enumValues` are every option the products'
+ * descriptions name for `identifiers` ({@link catalogOptions}); a bound device's own are its description's.
  */
 export function bundled(identifiers: readonly string[], param: number, enumerated = false) {
   const id = (ctx: AvailabilityContext) => identifiers.find((i) => ctx.things?.properties[i]);
@@ -1639,9 +1641,11 @@ export function bundled(identifiers: readonly string[], param: number, enumerate
     const values = keys.includes("*") ? (listed(ctx) ?? []).map((m) => m.value) : keys;
     return [...new Set(values)].filter((v) => /^-?\d+$/.test(v) && builds(ctx, v)).map(Number);
   };
+  const options = enumerated ? catalogOptions(identifiers) : undefined;
   return {
     param,
     thing: identifiers,
+    ...(options ? { enumValues: options } : {}),
     available: (ctx: AvailabilityContext): boolean =>
       enumerated ? writeDomain(ctx).length > 0 : id(ctx) !== undefined && (builds(ctx, "1") || builds(ctx, "0")),
     readAvailable: reads(param),
