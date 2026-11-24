@@ -386,6 +386,50 @@ describe("a T8531 / T85V0 lock's own settings screens", () => {
     });
   });
 
+  it("send a T8530's loitering groups as the T85V0's: settings service on its own, else the legacy sender", () => {
+    const write = (topology: string) =>
+      thingWrite(
+        "device_loitering_detection_response",
+        JSON.stringify({ num: 0, setting: [] }),
+        on("device_loitering_detection_response", "T8530", "text", topology),
+      );
+    expect(write("standalone")).toMatchObject({ kind: "mqtt-json", cmd: 2715, lockService: true });
+    expect(write("hb3")).toEqual({
+      kind: "set-payload",
+      cmd: 2715,
+      payload: { num: 0, setting: [] },
+      channel: 2,
+      mValue3: 0,
+      stationAccount: true,
+    });
+  });
+
+  it("send the T85V0 rear screen settings through the legacy sender on every topology", () => {
+    const ctx = on("device_live_view_switch", "T85V0", "bool", "standalone");
+    expect(thingWrite("device_live_view_switch", "1", ctx)).toEqual({
+      kind: "set-payload",
+      cmd: 6491,
+      payload: { auto_up: 1 },
+      channel: 2,
+      mValue3: 0,
+      stationAccount: true,
+    });
+  });
+
+  it("carry the radar rain notification bit in the notification bitmask as the app does", () => {
+    const mode = (rain: boolean, cached?: string) => {
+      const ctx = on("smart_lock_notification_locked_switch", "T85V0", "bool", "standalone");
+      const things = { properties: { ...ctx.things!.properties, ...(rain && { device_rain_mode: {} }) } };
+      const c = { ...ctx, things, paramValue: (p: number) => (p === 1919 ? cached : undefined) } as CommandContext;
+      return (thingWrite("smart_lock_notification_locked_switch", "1", c) as { payload: { mode: number } }).payload
+        .mode;
+    };
+    expect(mode(true, "3")).toBe(7);
+    expect(mode(true, "19")).toBe(23);
+    expect(mode(false, "3")).toBe(23);
+    expect(mode(true)).toBe(17);
+  });
+
   it("send loitering detection as the dialog's 1-based index, read back as the UI value", () => {
     const ctx = (identifier: string, model: string, topology: string) => on(identifier, model, "int", topology);
     const range = "detection_loitering_detection_range";

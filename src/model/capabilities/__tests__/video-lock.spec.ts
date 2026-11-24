@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { LOCK, type LockActions } from "../lock.js";
 import { bind } from "./bind.js";
 import type { CommandContext, InboundSignal } from "../types.js";
-import type { MediaProvider } from "../../../core/contracts.js";
+import type { Command, MediaProvider } from "../../../core/contracts.js";
 
 const ctx: CommandContext = {
   channel: 7,
@@ -60,10 +60,37 @@ describe("native video lock", () => {
     await expect(acts.lock!()).rejects.toThrow(/missing member identity/);
     expect(sent).toEqual([]);
   });
-  it("withholds ff09 settings and keeps other families unchanged", () => {
-    const { acts } = bind<LockActions>("lock", ctx, { ff09Settings: { getAutoLockState: vi.fn() } });
-    expect(acts.setAutoLock).toBeUndefined();
-    expect(acts.getAutoLockState).toBeUndefined();
+  it("writes auto-lock as 6500, a schedule as 6501, each over its 1959 read", async () => {
+    const { acts, sent } = bind<LockActions>("lock", ctx);
+    await acts.setAutoLock!(true, undefined, {
+      isSchedule: true,
+      scheduleStartTime: [23, 0],
+      scheduleEndTime: [6, 30],
+    });
+    const [write] = sent as Extract<Command, { kind: "set-payload" }>[];
+    expect(write).toMatchObject({
+      cmd: 1958,
+      payload: { isAutoLock: 1, paramType: 6500 },
+      stationAccount: true,
+      base: { query: 1959 },
+      next: { cmd: 1958, payload: { isSchedule: 1, scheduleStart: "1700", scheduleEnd: "061e", paramType: 6501 } },
+    });
+    expect(write!.payload).not.toHaveProperty("autoLockTime");
+  });
+  it("reads auto-lock off its 1959 settings read", async () => {
+    const query = vi.fn().mockResolvedValue({ isAutoLock: 1, autoLockTime: 60, scheduleStart: "1700" });
+    const media = { p2pQuery: query } as unknown as MediaProvider;
+    const { acts } = bind<LockActions>("lock", ctx, { media, ff09Settings: { getAutoLockState: vi.fn() } });
+    await expect(acts.getAutoLockState!()).resolves.toEqual({
+      enabled: true,
+      delaySeconds: 60,
+      isSchedule: false,
+      scheduleStartTime: [23, 0],
+      scheduleEndTime: [6, 0],
+    });
+    expect(query).toHaveBeenCalledWith(1959);
+  });
+  it("keeps other families unchanged", () => {
     const other = bind<LockActions>("lock", { ...ctx, deviceType: 189 }).acts;
     expect(other.setAutoLock).toBeTypeOf("function");
     expect(other.refreshStatus).toBeUndefined();

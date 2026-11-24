@@ -429,6 +429,10 @@ describe("resolveThing leaves out what the app's own lock screens hide", () => {
     expect(at("1.1.3.4", "T85V0P9000000000")).toBe(false);
     expect(at("1.1.3.5")).toBe(false);
     expect(at("1.1.3.5", "T85V0P0000000000", "1")).toBe(true);
+    const live = lock("T85V0", "device_live_view_switch");
+    expect(shows(live, "device_live_view_switch", { serial: "T85V0P0000000000", firmwareVersion: "1.1.3.5" })).toBe(
+      false,
+    );
   });
 
   it("T8530 loitering detection behind the stations that carry it, else from firmware 1.1.4.0 behind 3.2.0.8h", () => {

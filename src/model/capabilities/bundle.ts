@@ -32,9 +32,9 @@ import TIMEZONES from "./timezones.json" with { type: "json" };
  * - `ble`: not sent.
  *
  * Payloads, values and bodies carry `$value`, `$channel`, `$now`, `$nowS`, `$sn` and `$station` tokens, and
- * `$param:<id>[.<path>][|<m> | &~<m>][??<fallback>]` for a field the bundle reads off the device's cached param
+ * `$param:<id>[.<path>][|<m> | &~<m>]…[??<fallback>]` for a field the bundle reads off the device's cached param
  * `id`: its raw value, the `.`-joined `path` inside its (base64) JSON where given, as an int with bits `m` set or
- * cleared, else the JSON `fallback` the bundle sends when the param is unreported; none and the write is not
+ * cleared in turn, else the JSON `fallback` the bundle sends when the param is unreported; none and the write is not
  * sent. `next` are the frames sent after it, `after` the cloud write sent once it succeeds.
  */
 export interface BundleFrame extends SessionFrame {
@@ -203,13 +203,15 @@ export function bundleEntry(identifier: string, ctx: AvailabilityContext): Bundl
   const reads = Object.fromEntries(Object.entries(entry?.read ?? {}).map(([k, r]) => [k, hex ? base64Keys(r) : r]));
   const read = memberOf(reads, topology);
   const write = memberOf(entry?.write, topology);
-  const esl = ESL_SETTINGS.test(model);
+  const esl =
+    ESL_SETTINGS.test(model) || (model.startsWith("T8530") && identifier === "device_loitering_detection_response");
   const lockService = topology === "standalone" && esl;
+  const rain = !!ctx.things?.properties.device_rain_mode;
   const own = write
     ? esl
       ? Object.fromEntries(
           Object.entries(frames(write)).flatMap(([k, f]) => {
-            const sent = shown(model, f.lock?.tlv) && eslFrame(f, lockService);
+            const sent = shown(model, f.lock?.tlv) && eslFrame(f, lockService, rain);
             return sent ? [[k, sent]] : [];
           }),
         )
@@ -242,16 +244,27 @@ const bare = (f: BundleFrame): unknown => {
 const LOCK_SERVICE = { transport: "mqtt", mqttCmdCode: 9, needAck: false, lockService: true, timeout: 20 } as const;
 
 /**
- * A bundle frame as the lock's own settings screens send it: a notification switch (1919) through its settings
- * service when it is its own station; night vision (1277, 6244, 6245) and the loitering groups (2715) through the
- * app's legacy sender, a 1350 body without `transaction` under the station's member account, the groups through the
- * settings service as `{cmd, payload}` when it is its own station.
+ * A bundle frame as the lock's own settings screens send it: a notification switch (1919) with its bitmask's radar
+ * rain notification bit (16) as the lock reports it, on where unreported or the lock has no radar `rain` mode, through
+ * its settings service when it is its own station; night vision (1277, 6244, 6245), the loitering groups (2715) and
+ * the rear screen (6466, 6491) through the app's legacy sender, a 1350 body without `transaction` under the station's
+ * member account, the groups through the settings service as `{cmd, payload}` when it is its own station.
  */
-function eslFrame(f: BundleFrame, standalone: boolean): BundleFrame {
+function eslFrame(f: BundleFrame, standalone: boolean, rain: boolean): BundleFrame {
+  if (f.cmd === 1919 || f.subCmd === 1919) f = rainBit(f, rain);
   if (standalone && f.cmd === 1919) return { ...f, lockService: true, timeout: 20 };
-  if (f.body !== "json1350" || ![1277, 2715, 6244, 6245].includes(f.subCmd ?? NaN)) return f;
+  if (f.body !== "json1350" || ![1277, 2715, 6244, 6245, 6466, 6491].includes(f.subCmd ?? NaN)) return f;
   if (standalone && f.subCmd === 2715) return { ...LOCK_SERVICE, type: "json", cmd: 2715, payload: bare(f) };
   return { ...f, payload: bare(f), stationAccount: true };
+}
+
+/** A 1919 frame's `mode` with bit 16 forced on unless the lock has a radar rain mode, and on in its fallback. */
+function rainBit(f: BundleFrame, rain: boolean): BundleFrame {
+  const payload = f.payload as Record<string, unknown>;
+  if (typeof payload.mode !== "string") return f;
+  const [token, fallback] = payload.mode.split("??");
+  const mode = `${token}${rain ? "" : "|16"}${fallback === undefined ? "" : `??${Number(fallback) | 16}`}`;
+  return { ...f, payload: { ...payload, mode } };
 }
 
 /**
@@ -1237,8 +1250,8 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
     return out;
   };
   const param = (x: string) => {
-    const [, id, path, op, m, fallback] =
-      /^\$param:(\d+)((?:\.[^.|&?]+)*)(?:(\||&~)(\d+))?(?:\?\?(.*))?$/.exec(x) ?? [];
+    const [, id, path, ops, fallback] =
+      /^\$param:(\d+)((?:\.[^.|&?]+)*)((?:(?:\||&~)\d+)*)(?:\?\?(.*))?$/.exec(x) ?? [];
     const raw = ctx.paramValue?.(Number(id));
     const v =
       raw === undefined || !path
@@ -1248,8 +1261,10 @@ export function frameCommand(frame: BundleFrame, value: unknown, ctx: CommandCon
             .split(".")
             .reduce<unknown>((o, k) => (o as Record<string, unknown> | undefined)?.[k], decoded(raw));
     const n = Number.parseInt(String(v), 10);
-    const bits = Number.isNaN(n) ? undefined : op === "|" ? n | Number(m) : n & ~Number(m);
-    const out = v === undefined ? fallback && JSON.parse(fallback) : op ? bits : v;
+    const bits = Number.isNaN(n)
+      ? undefined
+      : [...ops!.matchAll(/(\||&~)(\d+)/g)].reduce((b, [, op, m]) => (op === "|" ? b | Number(m) : b & ~Number(m)), n);
+    const out = v === undefined ? fallback && JSON.parse(fallback) : ops ? bits : v;
     unfilled ||= out === undefined;
     return out;
   };

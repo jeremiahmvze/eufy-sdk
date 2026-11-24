@@ -150,9 +150,10 @@ const LOITERING_STATIONS = /^(T8030|T9000|t9000|T90H1|t90h1|T8N00|T7000|T8040|T8
  * Whether the app's own lock screens offer `identifier` on this device, the remote-config thresholds at the app's
  * compiled defaults: the T8531's rain mode from MCU version 1.2.1.6 (`"1."` and the last character of each
  * `ai_kernel_version`, `ai_algor_version`, `ai_rootfs_version` standalone, param 6621 behind a station); the T85V0's
- * radar rain mode from `sec_sw_version` 0.2.4.7, and behind a station from its firmware 3.6.9.2; its rear screen from
- * firmware 1.1.3.5 while param 6492 is on, below it unless its serial has `9` at index 6; the T8530's loitering
- * detection behind a {@link LOITERING_STATIONS} station, else from firmware 1.1.4.0 behind a station on 3.2.0.8h.
+ * radar rain mode from `sec_sw_version` 0.2.4.7, and behind a station from its firmware 3.6.9.2; its rear screen
+ * settings (display mode, live view) from firmware 1.1.3.5 while param 6492 is on, below it unless its serial has `9`
+ * at index 6; the T8530's loitering detection behind a {@link LOITERING_STATIONS} station, else from firmware 1.1.4.0
+ * behind a station on 3.2.0.8h.
  * Versions compare as Java strings but for the radar rain mode ({@link dottedAtLeast}).
  *
  * ponytail: the three remote-config thresholds are Firebase Remote Config keys the SDK cannot fetch, pinned at the
@@ -171,7 +172,7 @@ function lockScreenShows(identifier: string, f: ThingFacts): boolean {
       dottedAtLeast(f.record?.sec_sw_version, "0.2.4.7") &&
       (!behind || dottedAtLeast(f.stationFirmwareVersion, "3.6.9.2"))
     );
-  if (serial.startsWith("T85V0") && identifier === "smart_lock_set_back_screen")
+  if (serial.startsWith("T85V0") && ["smart_lock_set_back_screen", "device_live_view_switch"].includes(identifier))
     return atLeast(f.firmwareVersion, "1.1.3.5") ? /^(1|true)$/i.test(f.params?.[6492] ?? "") : serial[6] !== "9";
   if (serial.startsWith("T8530") && identifier.startsWith("detection_loitering_detection_"))
     return (

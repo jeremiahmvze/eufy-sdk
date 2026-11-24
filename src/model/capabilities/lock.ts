@@ -8,6 +8,7 @@ import {
 import { u16le } from "../../core/util.js";
 import { LockPushEvent } from "../push-events.js";
 import { describeDevice } from "./access.js";
+import { thingWrite } from "./bundle.js";
 import { method, propertiesOf, provided, type Members, type Surface } from "./members.js";
 import type { CapabilityModule, CommandContext, InboundSignal } from "./types.js";
 import type { Command, CommandSink, AutoLockSnapshot, MediaProvider } from "../../core/contracts.js";
@@ -141,6 +142,41 @@ function actuationAvailable(ctx: CommandContext, engage: boolean): boolean {
   return !isSmartDrop(ctx) || (!engage && ctx.stationSerial === undefined);
 }
 
+/**
+ * The T8530's auto-lock writes, as its auto-lock screen sends them over its settings read (1958 over 1959): paramType
+ * 6500 with `isAutoLock` and `autoLockTime` (the read's delay where none is given), then for a schedule paramType 6501
+ * with `isSchedule` and `scheduleStart`/`scheduleEnd`, each hour and minute as two lowercase hex digits.
+ */
+function videoLockAutoLock(
+  ctx: CommandContext,
+  enabled: boolean,
+  delaySeconds?: number,
+  schedule?: Pick<AutoLockSnapshot, "isSchedule" | "scheduleStartTime" | "scheduleEndTime">,
+): Command {
+  const write = (paramType: number, param: Record<string, unknown>) =>
+    thingWrite("smart_lock_set_setting_params", JSON.stringify({ paramType, param }), ctx)!;
+  const hex = (t: [number, number]) => t.map((n) => n.toString(16).padStart(2, "0")).join("");
+  const autoLock = write(6500, { isAutoLock: enabled ? 1 : 0, autoLockTime: delaySeconds });
+  if (!schedule) return autoLock;
+  const window = { isSchedule: schedule.isSchedule ? 1 : 0, scheduleStart: hex(schedule.scheduleStartTime) };
+  return { ...autoLock, next: write(6501, { ...window, scheduleEnd: hex(schedule.scheduleEndTime) }) };
+}
+
+/** A T8530's 1959 settings read as its auto-lock snapshot, each field the app's default where the read has none. */
+function videoLockSnapshot(read: Record<string, unknown>): AutoLockSnapshot {
+  const time = (v: unknown, d: string): [number, number] => {
+    const t = typeof v === "string" && v.length === 4 ? v : d;
+    return [parseInt(t.slice(0, 2), 16), parseInt(t.slice(2), 16)];
+  };
+  return {
+    enabled: Number(read.isAutoLock ?? 0) === 1,
+    delaySeconds: Number(read.autoLockTime ?? 30),
+    isSchedule: Number(read.isSchedule ?? 0) === 1,
+    scheduleStartTime: time(read.scheduleStart, "1700"),
+    scheduleEndTime: time(read.scheduleEnd, "0600"),
+  };
+}
+
 /** Live status read; unknown states remain unknown and device refusals reject. */
 async function refreshStatus(
   query: NonNullable<MediaProvider["p2pQuery"]>,
@@ -249,7 +285,7 @@ export const LOCK_MEMBERS = {
    * only `enabled` (+ `delaySeconds` if given — otherwise the current delay is preserved), and writes the
    * rest back verbatim. Works on both the T8531 video lock and the T85D0 garage/lock, which share the
    * identical settings frame. `schedule`, as `getAutoLockState` reads it, is written only on a lock that is its own
-   * station, in the same frame, as its auto-lock screen sends it.
+   * station, in the same frame, as its auto-lock screen sends it, and on the T8530 ({@link videoLockAutoLock}).
    *
    * **Unlike `lock`/`unlock` this can reject on a device TIMEOUT**, not just missing identity — the GET
    * step is a genuine precondition, so this one is not fire-and-forget.
@@ -261,16 +297,17 @@ export const LOCK_MEMBERS = {
         delaySeconds?: number,
         schedule?: Pick<AutoLockSnapshot, "isSchedule" | "scheduleStartTime" | "scheduleEndTime">,
       ): Promise<void> => {
-        if (!ctx.adminUserId) {
-          return Promise.reject(
-            new Error(`lock.setAutoLock: missing member identity (admin_user_id) [${describeDevice(ctx)}]`),
-          );
-        }
         const times = schedule ? [schedule.scheduleStartTime, schedule.scheduleEndTime] : [];
         if (
           times.some(([h, m]) => !(Number.isInteger(h) && Number.isInteger(m) && h >= 0 && h < 24 && m >= 0 && m < 60))
         )
           return Promise.reject(new Error(`lock.setAutoLock: schedule times must be [hour 0-23, minute 0-59]`));
+        if (isVideoSmartLock(ctx)) return sink.dispatch(videoLockAutoLock(ctx, enabled, delaySeconds, schedule));
+        if (!ctx.adminUserId) {
+          return Promise.reject(
+            new Error(`lock.setAutoLock: missing member identity (admin_user_id) [${describeDevice(ctx)}]`),
+          );
+        }
         // Its settings frame (paramType 0): enable, delay, the schedule flag, start and end ([hour, minute]) and the
         // door-state check, each the lock's own read where not given.
         if (ownStation(ctx)) {
@@ -298,7 +335,7 @@ export const LOCK_MEMBERS = {
         });
       },
     "Read-modify-write the auto-lock setting, preserving the fields it does not change.",
-    (ctx) => !isVideoSmartLock(ctx) && speaksFf09Settings(ctx),
+    speaksFf09Settings,
   ),
 
   /** Read the current device-reported state; undefined means no settled locked/unlocked state. */
@@ -317,7 +354,8 @@ export const LOCK_MEMBERS = {
 
   /**
    * Read the device's current auto-lock settings via a live `GET_SETTINGS` round-trip — the SAME read
-   * `setAutoLock` does internally, exposed standalone with no write attached. Works over BOTH transports.
+   * `setAutoLock` does internally, exposed standalone with no write attached. Works over BOTH transports; on the
+   * T8530 it is its 1959 settings read ({@link videoLockSnapshot}).
    * A genuine request/reply query, not a passive property, so it always talks to the device.
    *
    * `answers` for that reason: the returned snapshot IS the point, so it is not a control to offer even
@@ -326,10 +364,13 @@ export const LOCK_MEMBERS = {
   getAutoLockState: {
     ...provided(
       "ff09Settings",
-      (f, { ctx }) =>
-        isVideoSmartLock(ctx) || isSmartDrop(ctx) || isBluetoothLock(ctx)
+      (f, { ctx, media }) => {
+        const query = media?.p2pQuery?.bind(media);
+        if (isVideoSmartLock(ctx)) return query && (() => query(1959).then(videoLockSnapshot));
+        return isSmartDrop(ctx) || isBluetoothLock(ctx)
           ? undefined
-          : (): Promise<AutoLockSnapshot> => f.getAutoLockState(),
+          : (): Promise<AutoLockSnapshot> => f.getAutoLockState();
+      },
       "Read the current auto-lock settings via a live round-trip.",
     ),
     answers: true,
