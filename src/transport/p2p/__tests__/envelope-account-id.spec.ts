@@ -81,6 +81,14 @@ describe("the P2P envelope account id, per app sender", () => {
     expect(envelope.sendSetPayload.mock.calls[0]![2]).toMatchObject({ accountId: STATION_ADMIN, channel: 1 });
   });
 
+  it("is the station's member rule on the RTSP URL read's publish-switch provoke, the device's on its stream test", async () => {
+    const { session, router } = harness();
+    void router.readReportedRtspUrl(DEVICE_SN);
+    await vi.waitFor(() => expect(session.sendBytes).toHaveBeenCalledTimes(2));
+    expect(session.sendBytes).toHaveBeenCalledWith(buildDirectBinaryBody(1, STATION_ADMIN, 1), 1, 1145);
+    expect(session.sendBytes).toHaveBeenCalledWith(buildDirectBinaryBody(1, DEVICE_ADMIN, 1), 1, 1146);
+  });
+
   /** esiotkit's `?:` falls back on a missing member only: a stated `""` goes out as is. */
   it('sends a stated "" admin as is on a bundle frame', async () => {
     const { session, router } = harness({ admin_user_id: "" });

@@ -26,7 +26,7 @@ describe("P2PCommandRouter.readReportedRtspUrl", () => {
       const s = session(false);
       const router = routerWithSession(s);
       const read = router.readReportedRtspUrl(DEVICE_SN);
-      await vi.advanceTimersByTimeAsync(500); // both provokes have gone out, the test after the switch's answer
+      await vi.advanceTimersByTimeAsync(500); // both provokes have gone out, each in its turn
 
       expect(s.sendBytes).toHaveBeenCalledWith(buildDirectBinaryBody(1, ACCOUNT_ID, 1), 1, CMD_NAS_SWITCH);
       expect(s.sendBytes).toHaveBeenCalledWith(buildDirectBinaryBody(1, ACCOUNT_ID, 1), 1, CMD_NAS_TEST);

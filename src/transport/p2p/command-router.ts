@@ -1465,8 +1465,9 @@ export class P2PCommandRouter {
    * for a matching-channel `CMD_NAS_SWITCH` push. This is the only source of the freshly-generated
    * credentials: the vendor app regenerates them on every publish toggle and the cloud record lags.
    *
-   * The provokes are read by that push, not by their answers. Both go through {@link resolveScalarParam} and queue
-   * on the device as every command does ({@link sendAnswered}), the test after the switch's answer.
+   * The provokes are read by that push, not by their answers. Both go through {@link resolveScalarParam} unread
+   * ({@link sendUnread}), each in its turn on the device, the switch with the station record's account as the
+   * publish switch carries it (`stationAccount`).
    *
    * A single channel-filtered listener is armed BEFORE the provokes and torn down on either outcome,
    * so a fast push cannot fall in a re-arm gap and a station that never answers leaks nothing. The
@@ -1490,7 +1491,7 @@ export class P2PCommandRouter {
       // Do not block the read on the provokes: it returns as soon as the push arrives (or the deadline aborts).
       // The publish switch alone does not elicit the push; the livestream test paired with it does.
       for (const cmd of [CommandType.CMD_NAS_SWITCH, CommandType.CMD_NAS_TEST]) {
-        void this.resolveScalarParam(sn, cmd, 1, false, false).catch((e) =>
+        void this.resolveScalarParam(sn, cmd, 1, false, false, cmd === CommandType.CMD_NAS_SWITCH).catch((e) =>
           log.debug(`[p2p] ${sn} RTSP provoke ${cmd} failed`, e),
         );
       }
