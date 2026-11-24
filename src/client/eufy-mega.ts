@@ -423,6 +423,7 @@ export class EufyMega extends EventEmitter {
       logger: opts.logger,
       ffmpegPath: opts.ffmpegPath,
       onError: (e) => this.reportError(e),
+      onFrame: (stationSn, f) => this.onP2PFrame(stationSn, f),
     });
     this.mqtt = new MqttCommandRouter({
       mega: this.mega,
