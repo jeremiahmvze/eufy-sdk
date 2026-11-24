@@ -256,6 +256,26 @@ describe("a lock service write", () => {
     expect(mqtt.publish).toHaveBeenCalledTimes(2);
   });
 
+  it("reads auto-lock through the settings service: opcode 53 under apiCommand 6016", async () => {
+    const { router, mqtt } = lockRouter();
+    answering(mqtt as any, (t: any) => {
+      const plain = Buffer.from([0, 0xa1, 1, 1, 0xa2, 2, 0x1e, 0, 0xa3, 1, 0, 0xa4, 2, 0x16, 0, 0xa5, 2, 7, 0x1e]);
+      const time = t.payload.time;
+      return { dev_sn: SN, lock_payload: buildFf09ResponseFrame(plain, time, ADMIN, SN), time: time.toString(16) };
+    });
+    await expect(router.getAutoLockState(SN, { adminUserId: ADMIN, deviceSn: SN, lockService: true })).resolves.toEqual(
+      {
+        enabled: true,
+        delaySeconds: 30,
+        isSchedule: false,
+        scheduleStartTime: [0x16, 0],
+        scheduleEndTime: [7, 0x1e],
+      },
+    );
+    const { head, trans } = decode((mqtt.publish.mock.calls[0] as unknown as [string, string])[1]);
+    expect([head.cmd_status, trans.payload.apiCommand]).toEqual([2, 6016]);
+  });
+
   it("is done on a JSON write's result 0, bare and once", async () => {
     const { router, mqtt } = lockRouter();
     const json = {

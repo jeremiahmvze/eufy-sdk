@@ -664,8 +664,12 @@ export class MqttCommandRouter {
    * A pure GET, no SET: reuses {@link fetchFf09SettingsGetReply}, then decrypts
    * + decodes fields `a1`-`a5` per `transport/ff09.ts`'s response tag map.
    */
-  async getAutoLockState(sn: string, cmd: { adminUserId: string; deviceSn: string }): Promise<AutoLockSnapshot> {
+  async getAutoLockState(
+    sn: string,
+    cmd: { adminUserId: string; deviceSn: string; lockService?: boolean },
+  ): Promise<AutoLockSnapshot> {
     const dev = await this.pnDeviceFor(sn);
+    if (cmd.lockService) return decodeFf09AutoLockSnapshot(parseFf09SettingsResponse(await this.lockServiceRead(dev)));
     const mqtt = await this.secureMqtt("eufy_security");
     const topic = ff09MqttTopic(dev.model, sn);
     const getReply = await this.fetchFf09SettingsGetReply(mqtt, topic, sn, cmd);
@@ -789,9 +793,7 @@ export class MqttCommandRouter {
     const timeoutMs = (cmd.timeoutS ?? 5) * 1000;
     let fields = cmd.fields;
     if (cmd.preserve) {
-      const read = await this.lockServiceRequest(dev, { ...cmd, cmdCode: 53, fields: [] }, 6016, timeoutMs);
-      if (!read) throw new Error(`mqtt-dp for ${dev.sn}: no settings read answer within ${timeoutMs}ms`);
-      const reply = parseFf09SettingsResponse(read);
+      const reply = parseFf09SettingsResponse(await this.lockServiceRead(dev, timeoutMs));
       const next = (fields.at(-1)?.tag ?? 0xa2) + 1;
       fields = [
         ...fields,
@@ -810,6 +812,14 @@ export class MqttCommandRouter {
     );
     this.deps.onCommandAck({ sn: dev.sn, kind: "mqtt-dp", cmdCode: cmd.cmdCode, acked: answer !== undefined });
     return answer?.[0] === 0;
+  }
+
+  /** The lock's settings read through its own MQTT settings service: opcode 53 under apiCommand 6016; throws on no answer. */
+  private async lockServiceRead(dev: EufyDevice, timeoutMs = 20_000): Promise<Buffer> {
+    const read = { kind: "mqtt-dp", mqttCmdCode: 9, cmdCode: 53, fields: [] } as const;
+    const answer = await this.lockServiceRequest(dev, read, 6016, timeoutMs);
+    if (!answer) throw new Error(`lock service for ${dev.sn}: no settings read answer within ${timeoutMs}ms`);
+    return answer;
   }
 
   /**

@@ -14,7 +14,7 @@ const ADMIN = "0000000000000000000000000000000000000000";
 afterEach(() => vi.restoreAllMocks());
 
 describe("video lock ff09 routing", () => {
-  it("sends a standalone T8531 or T85V0 lock frames and auto-lock read over secure MQTT, an attached one over P2P", async () => {
+  it("reads a standalone T8531 or T85V0 auto-lock through its MQTT settings service, an attached one over P2P", async () => {
     const client = new EufyMega({
       email: "test@example.com",
       password: "synthetic",
@@ -61,14 +61,13 @@ describe("video lock ff09 routing", () => {
       hasP2p: true,
     });
 
-    await internals.routeCommand(STANDALONE, unlock(STANDALONE));
-    await internals.routeCommand(S330, unlock(S330));
     await internals.ff09SettingsReaderFor(STANDALONE, ctx(STANDALONE))!.getAutoLockState();
-    expect(mqtt.mock.calls).toEqual([
-      [STANDALONE, unlock(STANDALONE)],
-      [S330, unlock(S330)],
+    await internals.ff09SettingsReaderFor(S330, ctx(S330))!.getAutoLockState();
+    expect(mqttRead.mock.calls).toEqual([
+      [STANDALONE, { adminUserId: ADMIN, deviceSn: STANDALONE, lockService: true }],
+      [S330, { adminUserId: ADMIN, deviceSn: S330, lockService: true }],
     ]);
-    expect(mqttRead).toHaveBeenCalledExactlyOnceWith(STANDALONE, { adminUserId: ADMIN, deviceSn: STANDALONE });
+    expect(mqtt).not.toHaveBeenCalled();
 
     await internals.routeCommand(ATTACHED, unlock(ATTACHED));
     await internals.ff09SettingsReaderFor(ATTACHED, ctx(ATTACHED))!.getAutoLockState();

@@ -1,9 +1,16 @@
-import { isBluetoothLock, isClassicWifiLock, isSmartDrop, isVideoSmartLock } from "../device-family.js";
+import {
+  isBluetoothLock,
+  isClassicWifiLock,
+  isSmartDrop,
+  isVideoSmartLock,
+  settingsOverMqttWhenStandalone,
+} from "../device-family.js";
+import { u16le } from "../../core/util.js";
 import { LockPushEvent } from "../push-events.js";
 import { describeDevice } from "./access.js";
 import { method, propertiesOf, provided, type Members, type Surface } from "./members.js";
 import type { CapabilityModule, CommandContext, InboundSignal } from "./types.js";
-import type { CommandSink, AutoLockSnapshot, MediaProvider } from "../../core/contracts.js";
+import type { Command, CommandSink, AutoLockSnapshot, MediaProvider } from "../../core/contracts.js";
 
 /**
  * Bound lock controls — the object returned by `dev.lock()`.
@@ -81,9 +88,51 @@ function actuate(engage: boolean, ctx: CommandContext, sink: CommandSink): Promi
     shortUserId: ctx.shortUserId,
     deviceSn: ctx.serial ?? "",
   };
+  if (kind === "ff09-actuate" && ownStation(ctx))
+    return sink.dispatch(
+      serviceWrite(35, 6018, [
+        tlv(0xa3, Buffer.from([engage ? 0 : 1])),
+        tlv(0xa4, Buffer.from(identity.username, "utf8")),
+        tlv(0xa5, Buffer.from(ctx.shortUserId, "hex")),
+      ]),
+    );
   if (kind === "doorlock-pass-through-actuate") return sink.dispatch({ kind, ...identity });
   if (kind === "keyed-payload-actuate") return sink.dispatch({ kind, adminUserId: ctx.adminUserId, ...identity });
   return sink.dispatch({ kind, adminUserId: ctx.adminUserId!, ...identity });
+}
+
+/**
+ * A lock that is its own station and whose settings go over secure MQTT: the app sends its lock/unlock and auto-lock
+ * through the lock's own MQTT settings service ({@link serviceWrite}), not as an `ff09-*` intent.
+ */
+const ownStation = (ctx: CommandContext): boolean =>
+  !(ctx.homeBaseAttached ?? ctx.stationSerial !== undefined) && settingsOverMqttWhenStandalone(ctx.model);
+
+const tlv = (tag: number, value: Buffer) => ({ tag, value });
+
+/**
+ * A write through the lock's own MQTT settings service: `ff09` opcode `cmdCode` under `apiCommand`, its result awaited
+ * 20 s, once; `preserve` the settings read tags whose bytes follow `fields`.
+ */
+function serviceWrite(
+  cmdCode: number,
+  apiCommand: number,
+  fields: { tag: number; value: Buffer }[],
+  preserve?: number[],
+): Command {
+  return {
+    kind: "mqtt-dp",
+    mqttCmdCode: 9,
+    cmdCode,
+    fields,
+    subVersion: 3,
+    functionType: 2,
+    encrypt: true,
+    lockService: true,
+    apiCommand,
+    ...(preserve && { preserve }),
+    timeoutS: 20,
+  };
 }
 
 /**
@@ -213,6 +262,20 @@ export const LOCK_MEMBERS = {
         if (!ctx.adminUserId) {
           return Promise.reject(
             new Error(`lock.setAutoLock: missing member identity (admin_user_id) [${describeDevice(ctx)}]`),
+          );
+        }
+        // Its settings frame (paramType 0): enable, delay, then the schedule flag, start and end and the door-state check
+        // the lock reports, the delay too where none is given.
+        if (ownStation(ctx)) {
+          const delay = delaySeconds === undefined ? [] : [tlv(0xa5, u16le(delaySeconds))];
+          const keep = [...(delay.length ? [] : [0xa2]), 0xa3, 0xa4, 0xa5, 0xb4];
+          return sink.dispatch(
+            serviceWrite(
+              52,
+              6015,
+              [tlv(0xa3, Buffer.from([0])), tlv(0xa4, Buffer.from([enabled ? 1 : 0])), ...delay],
+              keep,
+            ),
           );
         }
         return sink.dispatch({
