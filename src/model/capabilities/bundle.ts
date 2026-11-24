@@ -356,27 +356,34 @@ const FLOODLIGHT_PARAMS: Readonly<Record<string, number>> = {
 /** `timer_for_lights`' UI values as the seconds the app sends and reads on 1409, an unknown read as the first. */
 const LIGHT_TIMER = [30, 60, 180, 300, 900];
 
+/** The schedule `{loop}` a host writes, as the app's `schedules`: each day a `{day}`, `once` empty. */
+const floodlightSchedules = (value: string) => {
+  const loop = parse(value)?.loop;
+  return Array.isArray(loop) ? { loop: weekDays(loop), once: [] } : undefined;
+};
+
 /**
- * A legacy floodlight write ({@link floodlightParam}) as the app sends it: the timer's seconds as a scalar on the
- * device channel; the schedule `{loop}` as `{account_id, schedules: {loop, once: []}}` JSON on 255; the sunrise
- * switch in the string body with the reported 1415 `lat`/`lng` as `{"lat": "…","lng": "…"}` (`""` without one,
- * which an enabling write refuses) and the switch as its int, channel 0.
+ * A legacy floodlight write ({@link floodlightParam}) as the app sends it, with the station's member account id: the
+ * timer's seconds as a scalar on the device channel; the schedule as `{account_id, schedules}` JSON on 255; the
+ * sunrise switch in the string body with the reported 1415 `lat`/`lng` as `{"lat": "…","lng": "…"}` (`""` without
+ * one, which an enabling write refuses) and the switch as its int, channel 0.
  */
 function floodlightWrite(param: number, value: string, ctx: CommandContext): Command | undefined {
   const seconds = LIGHT_TIMER[Number(value)];
-  if (param === 1409) return seconds === undefined ? undefined : setScalar(1409, seconds, ctx);
-  if (param === 1404) {
-    const loop = parse(value)?.loop;
-    return Array.isArray(loop)
-      ? setJsonRaw(1404, { schedules: { loop: weekDays(loop), once: [] } }, ctx, 255)
-      : undefined;
-  }
+  const schedules = floodlightSchedules(value);
+  const stationAccount = true;
+  if (param === 1409)
+    return seconds === undefined
+      ? undefined
+      : { kind: "set-param", param, value: seconds, channel: ctx.channel, stationAccount };
+  if (param === 1404)
+    return schedules && { kind: "set-json-raw", cmd: param, data: { schedules }, channel: 255, stationAccount };
   const at = parse(ctx.paramValue?.(1415));
   const [lat, lng] = [at?.lat, at?.lng].map((x) => parseFloat(String(x)));
   const java = (n: number) => (Number.isInteger(n) ? n.toFixed(1) : String(n));
   const place = Number.isFinite(lat) && Number.isFinite(lng) ? `{"lat": "${java(lat!)}","lng": "${java(lng!)}"}` : "";
   if (value === "1" && !place) return undefined;
-  return { kind: "p2p-string", cmd: 1414, value: place, channel: 0, int: value === "1" ? 1 : 0 };
+  return { kind: "p2p-string", cmd: 1414, value: place, channel: 0, int: value === "1" ? 1 : 0, stationAccount };
 }
 
 /** A read's `>` ranks, each its `+`-joined params. */
@@ -1356,7 +1363,12 @@ export function thingReadback(identifier: string, value: string, ctx: Availabili
   const floodlight = floodlightParam(identifier, ctx);
   if (floodlight === 1409) return { param: 1409, raw: String(LIGHT_TIMER[Number(value)]) };
   if (floodlight === 1414) return { param: 1414, raw: value };
-  if (floodlight) return undefined;
+  if (floodlight) {
+    const schedules = floodlightSchedules(value);
+    return (
+      schedules && { param: 1404, raw: Buffer.from(JSON.stringify({ account_id: "", schedules })).toString("base64") }
+    );
+  }
   const read = bundleEntry(identifier, ctx)?.read;
   param ??= ranksOf(read)[0]?.[0];
   const raw = read && param !== undefined ? rawOn(read, param, value) : undefined;
@@ -1382,6 +1394,10 @@ export function thingRead(
   const own = floodlight === undefined ? undefined : raw(floodlight);
   if (own !== undefined && floodlight === 1409) return String(Math.max(0, LIGHT_TIMER.indexOf(Number(own))));
   if (own !== undefined && floodlight === 1414) return String(own === "1");
+  if (own !== undefined && floodlight === 1404) {
+    const loop = objectOf(objectOf(decoded(own))?.schedules)?.loop;
+    return JSON.stringify({ loop: Array.isArray(loop) ? loop : [] });
+  }
   if (javaOverridden(identifier, ctx)) return undefined;
   const read = bundleEntry(identifier, ctx)?.read;
   for (const rank of ranksOf(read)) {

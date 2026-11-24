@@ -1210,7 +1210,7 @@ describe("legacy floodlight writes the app sends in Java", () => {
     const { index, commandReflection } = await load();
     const td = things({ timer_for_lights: ["0", "1", "2", "3", "4"] });
     const cmd = index.buildCommand("timer_for_lights", 2, ctx("T8423", { things: td }))!;
-    expect(cmd).toEqual({ kind: "set-param", param: 1409, value: 180, channel: 3 });
+    expect(cmd).toEqual({ kind: "set-param", param: 1409, value: 180, channel: 3, stationAccount: true });
     expect(commandReflection(cmd)).toEqual({ param: 1409, raw: "180" });
     expect(index.buildCommand("timer_for_lights", 2, ctx("T8110", { things: td })), "RN-routed").toBeUndefined();
     const read = (raw: string) => index.thingValue("timer_for_lights", ctx("T8420", { things: td }), () => raw);
@@ -1230,6 +1230,7 @@ describe("legacy floodlight writes the app sends in Java", () => {
       value: '{"lat": "48.85","lng": "2.0"}',
       channel: 0,
       int: 1,
+      stationAccount: true,
     });
     const unlocated = ctx("T8424", { things: td });
     expect(index.buildCommand("spotlight_schedule_switch", true, unlocated), "no location").toBeUndefined();
@@ -1239,17 +1240,26 @@ describe("legacy floodlight writes the app sends in Java", () => {
       "true",
     );
   });
-  test("spotlight_schedule_config: the schedules as JSON on 255", async () => {
-    const { index } = await load();
+  test("spotlight_schedule_config: the schedules as JSON on 255, read back from 1404's base64 JSON", async () => {
+    const { index, commandReflection } = await load();
     const td = things({ spotlight_schedule_config: [""] });
     const loop = [{ enable: 1, start_h: 18, start_m: 0, end_h: 6, end_m: 0, cross_day: 1, week: [0, 6] }];
     const value = JSON.stringify({ loop });
-    expect(index.buildCommand("spotlight_schedule_config", value, ctx("T8420", { things: td }))).toEqual({
+    const schedules = { loop: [{ ...loop[0], week: [{ day: 0 }, { day: 6 }] }], once: [] };
+    const cmd = index.buildCommand("spotlight_schedule_config", value, ctx("T8420", { things: td }))!;
+    expect(cmd).toEqual({
       kind: "set-json-raw",
       cmd: 1404,
-      data: { schedules: { loop: [{ ...loop[0], week: [{ day: 0 }, { day: 6 }] }], once: [] } },
+      data: { schedules },
       channel: 255,
+      stationAccount: true,
     });
+    const reported = Buffer.from(JSON.stringify({ account_id: "", schedules })).toString("base64");
+    expect(commandReflection(cmd)).toEqual({ param: 1404, raw: reported });
+    const read = (raw?: string) =>
+      index.thingValue("spotlight_schedule_config", ctx("T8420", { things: td }), () => raw);
+    expect(read(reported)).toBe(JSON.stringify({ loop: schedules.loop }));
+    expect(read(Buffer.from("{}").toString("base64")), "no schedules").toBe('{"loop":[]}');
     expect(
       index.buildCommand("spotlight_schedule_config", value, ctx("T8110", { things: td })),
       "RN-routed",
