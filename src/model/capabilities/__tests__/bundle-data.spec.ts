@@ -386,6 +386,50 @@ describe("a T8531 / T85V0 lock's own settings screens", () => {
     });
   });
 
+  it("send loitering detection as the dialog's 1-based index, read back as the UI value", () => {
+    const ctx = (identifier: string, model: string, topology: string) => on(identifier, model, "int", topology);
+    const range = "detection_loitering_detection_range";
+    expect(thingWrite(range, "8", ctx(range, "T85V0", "standalone"))).toEqual({
+      kind: "mqtt-json",
+      mqttCmdCode: 9,
+      cmd: 2707,
+      payload: { radar_wd_distance: 4 },
+      needAck: false,
+      lockService: true,
+      timeoutS: 20,
+    });
+    const time = "detection_loitering_detection_length";
+    expect(thingWrite(time, "45", ctx(time, "T8530", "hb3"))).toEqual({
+      kind: "set-payload",
+      cmd: 2708,
+      payload: { radar_wd_time: 5 },
+      channel: 2,
+      mValue3: 0,
+      stationAccount: true,
+    });
+    expect(thingWrite(time, "35", ctx(time, "T8530", "hb3"))).toBeUndefined();
+    const raw = Buffer.from(JSON.stringify({ radar_wd_time: 6 })).toString("base64");
+    expect(thingRead(time, ctx(time, "T85V0", "hb2"), (p) => (p === 2708 ? raw : undefined))).toBe("60");
+  });
+
+  it("send a T8530 setting over its last read, under the station's member account", () => {
+    const value = JSON.stringify({ paramType: 6505, param: { lockVolume: 2 } });
+    const command = thingWrite(
+      "smart_lock_set_setting_params",
+      value,
+      on("smart_lock_set_setting_params", "T8530", "text", "hb3"),
+    ) as Extract<Command, { kind: "set-payload" }>;
+    expect(command).toMatchObject({
+      kind: "set-payload",
+      cmd: 1958,
+      payload: { lockVolume: 2, paramType: 6505 },
+      channel: 2,
+      stationAccount: true,
+      base: { query: 1959 },
+    });
+    expect(Object.keys(command.base!.fields)).toHaveLength(33);
+  });
+
   it("offer rain mode on the T8531 only, never on a lock whose settings are its bundle's", () => {
     const rain = (model: string, topology: string) =>
       thingWrite("smart_lock_rain_mode_switch", "1", on("smart_lock_rain_mode_switch", model, "bool", topology));

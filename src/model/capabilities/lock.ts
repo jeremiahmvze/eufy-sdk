@@ -30,7 +30,7 @@ import type { Command, CommandSink, AutoLockSnapshot, MediaProvider } from "../.
  */
 export type LockActions = Surface<typeof LOCK_MEMBERS>;
 
-/** Native video-lock command vocabulary, on the HomeBase 3 route `actuationAvailable` opens. */
+/** Native video-lock command vocabulary, sent to its station under the station's member account. */
 const VIDEO_LOCK_CMD = { ACTUATE: 1961, STATUS: 1955, NOTIFY: 1351 } as const;
 
 /**
@@ -74,6 +74,7 @@ function actuate(engage: boolean, ctx: CommandContext, sink: CommandSink): Promi
       cmd: VIDEO_LOCK_CMD.ACTUATE,
       channel: ctx.channel,
       mValue3: 0,
+      stationAccount: true,
       payload: {
         shortUserId: ctx.shortUserId,
         slOperation: engage ? 1 : 0,
@@ -135,13 +136,9 @@ function serviceWrite(
   };
 }
 
-/**
- * Native actuation is verified only on the HomeBase 3 route; a SmartDrop lid opens only standalone and never
- * engages. Other lock families retain their controls.
- */
+/** A SmartDrop lid opens only standalone and never engages. Other lock families retain their controls. */
 function actuationAvailable(ctx: CommandContext, engage: boolean): boolean {
-  if (isSmartDrop(ctx)) return !engage && ctx.stationSerial === undefined;
-  return !isVideoSmartLock(ctx) || ctx.stationSerial?.startsWith("T8030") === true;
+  return !isSmartDrop(ctx) || (!engage && ctx.stationSerial === undefined);
 }
 
 /** Live status read; unknown states remain unknown and device refusals reject. */

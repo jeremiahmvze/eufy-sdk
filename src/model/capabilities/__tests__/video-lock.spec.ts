@@ -41,21 +41,15 @@ describe("native video lock", () => {
         cmd: 1961,
         channel: ctx.channel,
         mValue3: 0,
+        stationAccount: true,
         payload: { shortUserId: "0001", slOperation: operation, userId: ctx.adminUserId, userName: ctx.accountName },
       },
     ]);
   });
-  it.each([undefined, "T8021P0000000000", "T8530P0000000000"])(
-    "withholds native actuation on an unverified station %s",
-    async (stationSerial) => {
-      const context = { ...ctx, stationSerial };
-      const { acts, sent } = bind<LockActions>("lock", context);
-      for (const action of ["lock", "unlock"] as const) {
-        expect(acts[action]).toBeUndefined();
-      }
-      expect(sent).toEqual([]);
-    },
-  );
+  it.each([undefined, "T8021P0000000000", "T8530P0000000000"])("actuates behind any station %s", (stationSerial) => {
+    const { acts } = bind<LockActions>("lock", { ...ctx, stationSerial });
+    expect([typeof acts.lock, typeof acts.unlock]).toEqual(["function", "function"]);
+  });
   it("leaves userId out on a member stating no admin id, as the app's Gson does", async () => {
     const { acts, sent } = bind<LockActions>("lock", { ...ctx, adminUserId: undefined });
     await acts.lock!();

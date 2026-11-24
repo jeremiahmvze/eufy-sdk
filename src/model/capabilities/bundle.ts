@@ -78,6 +78,8 @@ export interface BundleFrame extends SessionFrame {
   preserve?: readonly number[];
   /** P2P 1350: the station record's member account id in place of the admin's. */
   stationAccount?: true;
+  /** P2P 1350: the payload over these fields of the device's answer to query `query`, each its default where it lacks one. */
+  base?: { query: number; fields: Readonly<Record<string, number | string>> };
   next?: BundleFrame[];
   after?: BundleFrame;
   /** A lock setting over its station: the `ble` the app builds the 1350 params from. */
@@ -168,6 +170,9 @@ interface BundleWires {
 
 const BUNDLE_WIRES = DATA as unknown as BundleWires;
 
+/** What {@link bundleEntry} selects: the write frames by value, the read, and whether the app's Java overrides both. */
+type BundleEntry = { write?: Record<string, BundleFrame>; read?: BundleRead; override?: string };
+
 /** The value of the `grouped` key listing `member`. */
 function memberOf<T>(grouped: Grouped<T> | undefined, member: string): T | undefined {
   return Object.entries(grouped ?? {}).find(([key]) => key.split(" ").includes(member))?.[1];
@@ -183,12 +188,14 @@ function variantOf(identifier: string, ctx: AvailabilityContext): string {
  * resolved variant, standalone unless attached (a record naming a station serial is), a T8030 station as
  * `hb3`, any other as `hb2`.
  */
-export function bundleEntry(identifier: string, ctx: AvailabilityContext) {
+export function bundleEntry(identifier: string, ctx: AvailabilityContext): BundleEntry | undefined {
   const groups = BUNDLE_WIRES.wires[identifier];
   const model = ctx.model ?? "";
   const entry = memberOf(groups, model + variantOf(identifier, ctx)) ?? memberOf(groups, model);
   const attached = ctx.homeBaseAttached ?? ctx.stationSerial !== undefined;
   const topology = !attached ? "standalone" : ctx.stationSerial?.startsWith("T8030") ? "hb3" : "hb2";
+  const java = javaEntry(identifier, model, topology === "standalone");
+  if (java) return java;
   const frame = (f: BundleFrame | number) => (typeof f === "number" ? BUNDLE_WIRES.frames?.[f] : f);
   const frames = (w: Grouped<BundleFrame | number> = {}) =>
     Object.fromEntries(Object.entries(w).flatMap(([k, f]) => (frame(f) ? [[k, frame(f)!]] : [])));
@@ -210,7 +217,7 @@ export function bundleEntry(identifier: string, ctx: AvailabilityContext) {
     : lockService
       ? ownStationWrite(identifier, frames(memberOf(entry?.write, "hb2")), model)
       : undefined;
-  return (entry || own) && { write: own, read, override: entry?.override };
+  return entry || own ? { write: own, read, override: entry?.override } : undefined;
 }
 
 /**
@@ -245,6 +252,99 @@ function eslFrame(f: BundleFrame, standalone: boolean): BundleFrame {
   if (f.body !== "json1350" || ![1277, 2715, 6244, 6245].includes(f.subCmd ?? NaN)) return f;
   if (standalone && f.subCmd === 2715) return { ...LOCK_SERVICE, type: "json", cmd: 2715, payload: bare(f) };
   return { ...f, payload: bare(f), stationAccount: true };
+}
+
+/**
+ * Loitering detection as the lock's own motion screen writes it (T8530, T85V0): `{<key>: n}` under `cmd`, `n` the
+ * switch's 0/1 or the 1-based index of the UI value in its dialog (2-10 ft, 15-60 s), read back off param `cmd`'s JSON.
+ */
+const LOITERING: Readonly<Record<string, readonly [cmd: number, key: string, ui: readonly number[], from: number]>> = {
+  detection_loitering_detection_switch: [2706, "radar_wd_switch", [0, 1], 0],
+  detection_loitering_detection_range: [2707, "radar_wd_distance", [2, 4, 6, 8, 10], 1],
+  detection_loitering_detection_length: [2708, "radar_wd_time", [15, 20, 25, 30, 45, 60], 1],
+};
+
+/**
+ * The T8530's settings write (1958) as the app sends it: every settings field the app writes (its default where the
+ * lock's 1959 answer lacks it) under the host's `paramType` and `param` fields, without `transaction`, under the
+ * station's member account.
+ */
+const T8530_SETTINGS: BundleFrame = {
+  cmd: 1350,
+  body: "json1350",
+  channel: "$channel",
+  subCmd: 1958,
+  mValue3: 0,
+  payload: { $input: "...param", paramType: "$input.paramType" },
+  stationAccount: true,
+  base: {
+    query: 1959,
+    fields: {
+      paramType: 0,
+      isAutoLock: 0,
+      autoLockTime: 30,
+      isSchedule: 0,
+      scheduleStart: "1700",
+      scheduleEnd: "0600",
+      isOneTouchLock: 1,
+      isOneTouchRearLock: 1,
+      isWrongTryProtect: 1,
+      wrongTryTime: 5,
+      lockDownTime: 180,
+      isScramblePasscode: 0,
+      isNotification: 0,
+      isLockNotification: 0,
+      isUnLockNotification: 0,
+      lockOpenDirection: 0,
+      nightVisionEnhance: 0,
+      openLeftAlarmEnable: 0,
+      openLeftAlarmTimer: 3,
+      openLeftAlarmWays: 5,
+      openLeftAlarmScheduled: 0,
+      openLeftAlarmScheduleStart: "1700",
+      openLeftAlarmScheduleEnd: "0600",
+      tamperAlarmEnable: 0,
+      tamperAlarmWays: 0,
+      tamperAlarmScheduled: 0,
+      tamperAlarmScheduleStart: "1700",
+      tamperAlarmScheduleEnd: "0600",
+      lockVolume: 0,
+      lockSound: 0,
+      privacyModel: 1,
+      isCalibration: 0,
+      isDoorStateCheck: 0,
+    },
+  },
+};
+
+/**
+ * What a lock's own Java screens send where its bundle's data does not: {@link LOITERING} through the lock's settings
+ * service when it is its own station, else as a 1350 body without `transaction` under the station's member account;
+ * {@link T8530_SETTINGS}.
+ */
+function javaEntry(identifier: string, model: string, standalone: boolean): BundleEntry | undefined {
+  if (identifier === "smart_lock_set_setting_params" && model.startsWith("T8530"))
+    return { write: { "*": T8530_SETTINGS } };
+  const loitering = /^T85(30|V0)/.test(model) ? LOITERING[identifier] : undefined;
+  if (!loitering) return undefined;
+  const [cmd, key, ui, from] = loitering;
+  const frame = (n: number): BundleFrame =>
+    standalone
+      ? { ...LOCK_SERVICE, type: "json", cmd, payload: { [key]: n } }
+      : {
+          cmd: 1350,
+          body: "json1350",
+          channel: "$channel",
+          subCmd: cmd,
+          mValue3: 0,
+          payload: { [key]: n },
+          stationAccount: true,
+        };
+  const map = Object.fromEntries(ui.map((v, i) => [String(i + from), String(v)]));
+  return {
+    write: Object.fromEntries(ui.map((v, i) => [String(v), frame(i + from)])),
+    read: { order: String(cmd), field: { param: cmd, path: key, map } },
+  };
 }
 
 /** The settings TLV after `A1`/`A2` of a scalar a lock's own settings screen writes, per value, bundled or not. */
@@ -873,6 +973,7 @@ function sessionCommand(
     return {
       ...command,
       ...(frame.stationAccount && { stationAccount: true as const }),
+      ...(frame.base && { base: frame.base }),
       ...(frame.unzipParams && object && { unzip: true as const }),
       ...(counter && { counter }),
     } as Command;

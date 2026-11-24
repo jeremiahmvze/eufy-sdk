@@ -765,7 +765,11 @@ export class P2PCommandRouter {
           (await this.sendSetPayloadEnvelope(
             sn,
             cmd.cmd,
-            cmd.lock ? { ...(await this.lockParams(sn, cmd.lock)), ...cmd.payload } : cmd.payload,
+            cmd.lock
+              ? { ...(await this.lockParams(sn, cmd.lock)), ...cmd.payload }
+              : cmd.base
+                ? await this.overAnswer(sn, cmd.base, cmd.payload as Record<string, unknown>)
+                : cmd.payload,
             cmd.channel,
             cmd.mValue3,
             undefined,
@@ -1975,6 +1979,16 @@ export class P2PCommandRouter {
       0,
       resolved,
     );
+  }
+
+  /** `payload` over `base.fields` of `sn`'s answer to query `base.query`, each field's default where the answer lacks it. */
+  private async overAnswer(
+    sn: string,
+    base: NonNullable<Extract<Command, { kind: "set-payload" }>["base"]>,
+    payload: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const answer = await this.p2pQuery(sn, base.query);
+    return Object.fromEntries(Object.entries(base.fields).map(([k, d]) => [k, payload[k] ?? answer[k] ?? d]));
   }
 
   /** Per lock, the last `seq_num` a v2 lock setting carried (`SecuritySeqNumManager`); unseen, the clock in seconds. */

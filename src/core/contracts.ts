@@ -349,6 +349,8 @@ export type Command =
         /** How long the device's answer is awaited, never resent, where the app bounds the request itself. */
         answerMs?: number;
         stationAccount?: true;
+        /** The payload over these fields of the device's answer to 1350 query `query`, each its default where it lacks one. */
+        base?: { query: number; fields: Readonly<Record<string, number | string>> };
         /**
          * A lock setting over its station (v2): the transport builds the params as the app's `handleV2Payload`,
          * `{lock_payload, seq_num, apiCommand, time}`, the `ff09` frame of these fields for the lock.
