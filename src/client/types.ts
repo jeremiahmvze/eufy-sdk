@@ -198,6 +198,16 @@ export interface EufyMegaOptions extends MegaClientConfig {
 }
 
 /**
+ * One station's part in {@link EufyMega.setHouseMode}: `skipped` where it was offline or already in the mode
+ * and nothing was sent, `answered` where it answered the write with success, else `failed` with the reason.
+ */
+export interface HouseModeResult {
+  sn: string;
+  result: "skipped" | "answered" | "failed";
+  error?: unknown;
+}
+
+/**
  * What the SDK can honestly say about a device's liveness at one instant — the facts, never a verdict.
  *
  * There is deliberately **no `online: boolean`**. "Unreachable" is a threshold decision, and the right

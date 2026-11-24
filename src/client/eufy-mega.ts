@@ -81,6 +81,7 @@ import { isHomeBase, isTuyaVacuum, isVideoSmartLock } from "../model/device-fami
 import { DeviceType } from "../model/device-types.js";
 import { cameraPowerTier } from "../model/capabilities/battery.js";
 import { liveFrames, rtcLiveFrames } from "../model/capabilities/bundle.js";
+import { armedWithHouse, armingModeCommand, HOUSE_ARM_STATUS, type ArmingMode } from "../model/capabilities/arming.js";
 import { DeviceRegistry, recordString, type DeviceRecord, type ParamChange } from "./device-registry.js";
 import { PushRepeats } from "./push-repeats.js";
 import type {
@@ -88,6 +89,7 @@ import type {
   EufyMegaEvent,
   EufyMegaEventMap,
   DeviceState,
+  HouseModeResult,
   RealtimePlaneReadiness,
   RealtimeReadiness,
   StationFace,
@@ -101,6 +103,7 @@ export type {
   EufyMegaEventMap,
   AnyDeviceEvent,
   DeviceState,
+  HouseModeResult,
   RealtimePlaneReadiness,
   RealtimeReadiness,
   StationFace,
@@ -2200,6 +2203,45 @@ export class EufyMega extends EventEmitter {
     // Throw instead of silently no-op'ing.
     if (!cmd) throw new CapabilityNotSupportedError(sn, name);
     await this.commandSinkFor(sn).dispatch(cmd);
+  }
+
+  /**
+   * Arm a house, as the app's security page does. The house's cloud config takes the mode first
+   * (`update_home_config`, `arm_status` 1 home, 2 away, 3 disarmed); a refusal rejects and nothing is sent. The
+   * stations are then the ones its `get_home_config` names that the device list carries, else the house's own:
+   * a station or a device that is its own, `eufy_security`, not held as a guest, and not a SmartDrop, lock
+   * (bar the T8531 and T85V0), T8021, safe, tracker or chime. Each one online (param 1131 `"1"`, or an open P2P
+   * session) whose 1224 (unreported: home) is not already the mode is written at once and awaited 6 s: the
+   * `1350` envelope `{mode_type, user_name}` on a platform-V2 device, else the direct 1224 frame. Resolves once
+   * all have answered, with each station's {@link HouseModeResult}, whatever they answered.
+   *
+   * @param houseId a house id, a device's {@link EufyDevice.houseId}.
+   */
+  async setHouseMode(houseId: string, mode: ArmingMode): Promise<HouseModeResult[]> {
+    await this.mega.post("butler", "/app/butler/update_home_config", {
+      house_id: houseId,
+      arm_status: HOUSE_ARM_STATUS[mode],
+    });
+    const config = await this.mega.post<{ station_sns?: string[] }>("butler", "/app/butler/get_home_config", {
+      house_id: houseId,
+    });
+    const devices = this.registry.list().length ? this.registry.list() : await this.getDevices();
+    const named = devices.filter((d) => config?.station_sns?.includes(d.sn));
+    const stations = named.length ? named : devices.filter((d) => d.houseId === houseId && armedWithHouse(d));
+    return Promise.all(
+      stations.map(async ({ sn }): Promise<HouseModeResult> => {
+        const online = this.registry.paramOf(sn, 1131) === "1" || !!this.p2p.getSessions().get(sn)?.isConnected;
+        const local = Number.parseInt(this.registry.paramOf(sn, 1224) ?? "", 10);
+        try {
+          const cmd = armingModeCommand(mode, await this.commandContext(sn));
+          if (!online || String(Number.isNaN(local) ? 1 : local) === commandReflection(cmd)?.raw)
+            return { sn, result: "skipped" };
+          return { sn, result: (await this.routeAndReflect(sn, cmd)) ? "answered" : "failed" };
+        } catch (error) {
+          return { sn, result: "failed", error };
+        }
+      }),
+    );
   }
 
   /**
