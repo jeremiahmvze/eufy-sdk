@@ -395,6 +395,18 @@ describe("RtcCommandRouter on the native layers", () => {
     fresh.router.close();
   });
 
+  it("fails a data-channel live start its station leaves unanswered once its descriptor's request window ends", async () => {
+    const sn = "T8223P0000000000";
+    const { router, data } = layers();
+    data.command.mockReturnValue(new Promise(() => {}));
+    const live = { start: { ...SOLO_LIVE!.start, rtcSendRoute: 0, timeoutMs: 50 }, stop: SOLO_LIVE!.stop };
+    const route = { ...ROUTE, stationSn: sn, cameraSn: sn, attached: false, channel: 0, version: 3375, live };
+    const consumer = await router.mediaProviderFor(route).live();
+    const failed = new Promise<Error>((r) => consumer.on("error", r));
+    await expect(failed).resolves.toBeInstanceOf(Error);
+    router.close();
+  });
+
   it("routes a T8030 child's live frames on the station's context: 1700 over ANKE above 3742, its route-0 stop on the data channel", async () => {
     const hub = "T8030P0000000000";
     const live = { start: { ...SOLO_LIVE!.start, rtcSendRoute: 0 }, stop: { ...SOLO_LIVE!.stop, rtcSendRoute: 0 } };
