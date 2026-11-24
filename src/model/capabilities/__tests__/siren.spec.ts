@@ -183,7 +183,7 @@ describe("siren capability module", () => {
   });
 
   /** A description listing `set_alarm_type` with `values`, as each product's does. */
-  const alarmThings = (model: string, values: string[]) =>
+  const alarmThings = (model: string, values: string[], ...more: object[]) =>
     parseThingsList({
       things_list: [
         {
@@ -194,6 +194,7 @@ describe("siren capability module", () => {
               access_mode: "RW",
               data_type: { type: "ienum", specs: { eunmList: values.map((value) => ({ value, desc: "" })) } },
             },
+            ...more,
           ],
         },
       ],
@@ -409,6 +410,68 @@ describe("siren capability module", () => {
       await expect(acts.trigger!([0])).rejects.toThrow(/speaker is off/);
       await expect(acts.trigger!([4])).rejects.toThrow(/must be some of 0\/1\/2\/3/);
       expect(sent).toHaveLength(4);
+    });
+
+    const batteryDevice = {
+      identifier: "device_is_battery_device",
+      data_type: { type: "bool", specs: { defaultValue: "true" } },
+    };
+    const batteryValue = { identifier: "battery_value", data_type: { type: "int" } };
+
+    it("refuses to start an alarm on a battery device under 6 %, as the app's live view does", async () => {
+      const battery = { value: "5" };
+      const { acts, sent } = sirenOf({
+        ...camera("T8134", false),
+        things: alarmThings("T8134", ["0"], batteryDevice, batteryValue),
+        paramValue: (p) => (p === 1101 ? battery.value : undefined),
+      });
+      await expect(acts.trigger!([0])).rejects.toThrow(/battery is low/);
+      battery.value = "6";
+      await acts.trigger!([0]);
+      expect(sent).toHaveLength(1);
+    });
+
+    it("takes the low-battery threshold from the description's player_model_config", async () => {
+      const config = {
+        identifier: "player_model_config",
+        data_type: { type: "text", specs: { defaultValue: '{"config": {"low_battery_threshold": 10}}' } },
+      };
+      const { acts, sent } = sirenOf({
+        ...camera("T8134", false),
+        things: alarmThings("T8134", ["0"], batteryDevice, batteryValue, config),
+        paramValue: (p) => (p === 1101 ? "9" : undefined),
+      });
+      await expect(acts.trigger!([0])).rejects.toThrow(/battery is low/);
+      expect(sent).toHaveLength(0);
+    });
+
+    it("counts an unreported described battery_value as 0, and ignores a level the description lists none of", async () => {
+      const unreported = sirenOf({
+        ...camera("T8134", false),
+        things: alarmThings("T8134", ["0"], batteryDevice, batteryValue),
+      });
+      await expect(unreported.acts.trigger!([0])).rejects.toThrow(/battery is low/);
+      const undescribed = sirenOf({
+        ...camera("T8134", false),
+        things: alarmThings("T8134", ["0"], batteryDevice),
+        paramValue: (p) => (p === 1101 ? "5" : undefined),
+      });
+      await undescribed.acts.trigger!([0]);
+      expect(undescribed.sent).toHaveLength(1);
+    });
+
+    it.each([
+      ["speaker_on_off", 0, /speaker is off/],
+      ["spotlight_status", 1, /light is off/],
+    ])("refuses an alarm whose described %s reports no value", async (identifier, type, error) => {
+      const things = alarmThings("T8170", [String(type)], {
+        identifier,
+        access_mode: "RW",
+        data_type: { type: "bool" },
+      });
+      const { acts, sent } = sirenOf({ ...camera("T8170", true), things });
+      await expect(acts.trigger!([type])).rejects.toThrow(error);
+      expect(sent).toHaveLength(0);
     });
 
     it("installs no alarm action where the description lists no set_alarm_type", () => {

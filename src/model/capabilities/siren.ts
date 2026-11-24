@@ -1,5 +1,6 @@
 import { asBool, coerceEnumValue, enumLabels, isStationSerial } from "../../core/util.js";
 import { HOMEBASE_TYPES, isHomeBase } from "../device-family.js";
+import { BATTERY_PARAM } from "./battery.js";
 import { setPayload, setStationScalar } from "./access.js";
 import { bundled, thingRead, thingWrite } from "./bundle.js";
 import { method, propertiesOf, type Members, type Surface } from "./members.js";
@@ -107,23 +108,44 @@ function liveAlarm(open: boolean, types: readonly number[], ctx: CommandContext)
   return [...final].map((type) => alarmWrite(JSON.stringify({ open, type }), ctx));
 }
 
-/** Whether the described `identifier` reads off as the product's bundle reads it; unreported counts as on. */
-function readsOff(identifier: string, ctx: CommandContext): boolean {
-  const v = thingRead(identifier, ctx, (p) => ctx.paramValue?.(p));
-  return v !== undefined && !asBool(v);
+/** Whether `identifier` reads on: an undescribed one counts as on, a described one with no value as off. */
+function readsOn(identifier: string, ctx: CommandContext): boolean {
+  return !ctx.things?.properties[identifier] || asBool(thingRead(identifier, ctx, (p) => ctx.paramValue?.(p)));
+}
+
+/** The description's `player_model_config` `config.low_battery_threshold`, 6 where it states none. */
+function lowBatteryThreshold(ctx: CommandContext): number {
+  try {
+    const config = JSON.parse(thingRead("player_model_config", ctx, () => undefined) ?? "{}").config;
+    const n = Number.parseInt(String(config?.low_battery_threshold), 10);
+    return Number.isNaN(n) ? 6 : n;
+  } catch {
+    return 6;
+  }
 }
 
 /**
- * The live view's alarm for `types`, each one the description's `set_alarm_type` lists; starting sound (0, 2) needs
- * `speaker_on_off` on and light (1, 2) `spotlight_status`, as the app refuses otherwise.
+ * Whether a battery device describing `battery_value` has its level (1101) under its low-battery threshold; a level
+ * it does not report counts as 0.
+ */
+function lowBattery(ctx: CommandContext): boolean {
+  const raw = (p: number) => ctx.paramValue?.(p);
+  if (!asBool(thingRead("device_is_battery_device", ctx, raw)) || !ctx.things?.properties.battery_value) return false;
+  return Number(raw(BATTERY_PARAM.BATTERY) ?? 0) < lowBatteryThreshold(ctx);
+}
+
+/**
+ * The live view's alarm for `types`, each one the description's `set_alarm_type` lists; starting refuses a low battery,
+ * sound (0, 2) needs `speaker_on_off` on and light (1, 2) `spotlight_status`, as the app refuses otherwise.
  */
 function liveAlarmFor(open: boolean, types: readonly number[], ctx: CommandContext): Command[] {
   const listed = alarmTypes(ctx);
   if (!types.length || types.some((t) => !listed.includes(t)))
     throw new Error(`siren: alarm types must be some of ${listed.join("/")}`);
-  if (open && types.some((t) => t === 0 || t === 2) && readsOff("speaker_on_off", ctx))
+  if (open && lowBattery(ctx)) throw new Error("siren: the battery is low");
+  if (open && types.some((t) => t === 0 || t === 2) && !readsOn("speaker_on_off", ctx))
     throw new Error("siren: the speaker is off");
-  if (open && types.some((t) => t === 1 || t === 2) && readsOff("spotlight_status", ctx))
+  if (open && types.some((t) => t === 1 || t === 2) && !readsOn("spotlight_status", ctx))
     throw new Error("siren: the light is off");
   const cmds = liveAlarm(open, types, ctx);
   if (!cmds.length || cmds.some((c) => c === undefined))
