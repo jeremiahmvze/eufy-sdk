@@ -268,6 +268,15 @@ describe("one command in flight per device", () => {
     await expect(second).resolves.toBe(true);
   });
 
+  it("frees the slot once an unanswered write is sent, so the next command goes at once", async () => {
+    const { router, session } = station();
+    await expect(router.dispatchCommand(DEVICE_SN, { ...write, unanswered: true })).resolves.toBe(false);
+    const next = router.dispatchCommand(DEVICE_SN, { ...write, param: PARAM + 1 });
+    await vi.waitFor(() => expect(session.sendBytes).toHaveBeenCalledTimes(2));
+    session.emit("commandResult", { code: 0, channel: CHANNEL, commandId: PARAM + 1 });
+    await expect(next).resolves.toBe(true);
+  });
+
   it("runs another device's command while one is in flight", async () => {
     const { router, session } = station();
     void router.dispatchCommand(DEVICE_SN, write).catch(() => {});

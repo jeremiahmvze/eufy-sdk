@@ -317,10 +317,12 @@ const COMMAND_OBSERVATION = Symbol("command-observation");
 export type Command =
   /**
    * The app's group-A scalar body `[u32 channel][u32 value][account_id → 128]`, or with `"int-pair"` the bare
-   * `[u32 channel][u32 value]`; the transport injects the account id and the session seals it.
+   * `[u32 channel][u32 value]`; the transport injects the account id and the session seals it. `unanswered`
+   * marks a param the device returns no result code under: the write is sent in its turn and holds no slot
+   * waiting for an answer.
    */
   (
-    | { kind: "set-param"; param: number; value: number; form?: "int-pair"; channel: number }
+    | { kind: "set-param"; param: number; value: number; form?: "int-pair"; channel: number; unanswered?: true }
     /** `data` is a number where the bundle sends `param_data`. */
     | { kind: "set-json"; param: number; data: Record<string, unknown> | number; channel: number }
     // `set-json-raw` differs from `set-json` in ONE way: the wire's outer P2P command IS `cmd` itself

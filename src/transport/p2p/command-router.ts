@@ -743,7 +743,9 @@ export class P2PCommandRouter {
     switch (cmd.kind) {
       // ── Intents — the transport picks the encryption level (see resolveScalarParam / setJson). ──
       case "set-param":
-        return (await this.resolveScalarParam(sn, cmd.param, cmd.value, cmd.form === "int-pair")) === true;
+        return (
+          (await this.resolveScalarParam(sn, cmd.param, cmd.value, cmd.form === "int-pair", !cmd.unanswered)) === true
+        );
       case "set-json":
         return (
           (await this.routeControl(sn, P2P_ENVELOPE.CONTROL_PAYLOAD, { commandType: cmd.param, data: cmd.data })) ===
@@ -1603,16 +1605,11 @@ export class P2PCommandRouter {
     answered: boolean,
     pair = false,
   ): Promise<boolean | void> {
-    return this.sendAnswered(
-      sn,
-      outerCmd,
-      ({ session, channel, accountId }) => {
-        const full = buildDirectBinaryBody(value, accountId, channel);
-        return session.sendBytes(pair ? full.subarray(0, 8) : full, channel, outerCmd);
-      },
-      undefined,
-      !answered,
-    );
+    const send = ({ session, channel, accountId }: ResolvedSession) => {
+      const full = buildDirectBinaryBody(value, accountId, channel);
+      return session.sendBytes(pair ? full.subarray(0, 8) : full, channel, outerCmd);
+    };
+    return answered ? this.sendAnswered(sn, outerCmd, send) : this.sendUnread(sn, outerCmd, send);
   }
 
   /**
@@ -1842,6 +1839,20 @@ export class P2PCommandRouter {
     if (!unread) return answered;
     answered.catch((e) => (this.deps.logger ?? noopLogger).debug(`[p2p] ${sn} command ${commandId} unread`, e));
     return Promise.race([answered, sent]).then(() => undefined);
+  }
+
+  /**
+   * Send one command the device returns no result code for, in its turn behind the commands already queued for
+   * `sn`, and free the slot once it is sent: a slot held for an answer that never comes would hold every later
+   * command for the device for the whole {@link WRITE_ANSWER} window. Resolves once sent.
+   */
+  private sendUnread(sn: string, commandId: number, send: (r: ResolvedSession) => boolean | void): Promise<void> {
+    return this.serializeAnswered(sn, async () => {
+      const r = await this.resolveSession(sn);
+      if (!r.session.sendAcknowledged(() => send(r) !== false)) {
+        throw new Error(`command ${commandId} for ${sn} was never sent (session not connected)`);
+      }
+    });
   }
 
   /**
