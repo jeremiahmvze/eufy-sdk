@@ -164,8 +164,8 @@ interface Pending {
 }
 
 export interface RtcDataChannelEvents {
-  /** A station notify: its command id and (decrypted) body. */
-  notify: [cmd: number, body: Buffer];
+  /** A station notify: its command id, (decrypted) body and header channel (byte 12). */
+  notify: [cmd: number, body: Buffer, channel: number];
   /** A message of another element type (2 file, 4 playback, 7 stream, 0x62, 0x63). */
   link: [type: number, data: Buffer];
   close: [];
@@ -324,7 +324,7 @@ export class RtcDataChannel extends EventEmitter<RtcDataChannelEvents> {
       return;
     }
     const plain = head[10] === GCM_VERSION ? (body.length > 28 ? gcmOpen(this.key, body) : undefined) : body;
-    if (plain) this.emit("notify", cmd, Buffer.from(plain));
+    if (plain) this.emit("notify", cmd, Buffer.from(plain), head[12]!);
   }
 }
 

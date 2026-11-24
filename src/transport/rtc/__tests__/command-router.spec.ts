@@ -122,14 +122,29 @@ describe("RtcCommandRouter on the native layers", () => {
     router.close();
   });
 
-  /** The app counts an RTC write done when its frame is written; it waits for no reply. */
-  it("answers a write done once its frame is written, without the station's reply", async () => {
+  /** The app's RTC bridge waits for the station's reply under the command id; its first int32 is the code. */
+  it("answers a write on the station's reply and rejects a non-zero code", async () => {
     const { router, data } = layers();
-    data.command.mockReturnValue(new Promise(() => {}));
-    await expect(router.dispatchCommand(ROUTE, { kind: "set-param", param: 1035, value: 1, channel: 3 })).resolves.toBe(
-      true,
-    );
-    expect(data.command).toHaveBeenCalledOnce();
+    const cmd = { kind: "set-param", param: 1145, value: 1, channel: 3 } as const;
+    data.command.mockResolvedValueOnce(u32(0)).mockResolvedValueOnce(Buffer.from(new Int32Array([-1]).buffer));
+    await expect(router.dispatchCommand(ROUTE, cmd)).resolves.toBe(true);
+    await expect(router.dispatchCommand(ROUTE, cmd)).rejects.toMatchObject({ commandId: 1145, code: -1 });
+    router.close();
+  });
+
+  it("reads the RTSP URL from the 1145 notify on the camera's channel, after an answered 1145 value 1", async () => {
+    const { router, data } = layers();
+    data.command.mockImplementation(async () => {
+      queueMicrotask(() => {
+        data.emit("notify", 1145, Buffer.from("rtsp://u:p@192.0.2.9/live1\0"), 4);
+        data.emit("notify", 1146, Buffer.from("rtsp://u:p@192.0.2.9/live0\0"), 3);
+      });
+      return u32(0);
+    });
+    await expect(router.readRtspUrl(ROUTE, 3)).resolves.toBe("rtsp://u:p@192.0.2.9/live0");
+    expect(data.command).toHaveBeenCalledExactlyOnceWith(1145, buildDirectBinaryBody(1, "synthetic-admin", 3), 3);
+    data.command.mockResolvedValue(Buffer.from(new Int32Array([-1]).buffer));
+    await expect(router.readRtspUrl(ROUTE, 3)).rejects.toMatchObject({ code: -1 });
     router.close();
   });
 
